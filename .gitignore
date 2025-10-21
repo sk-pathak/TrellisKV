@@ -1,0 +1,28 @@
+# Build directories
+build/
+cmake-build-*/
+
+# Compiled binaries
+trellis
+trellis-cli
+*.exe
+
+# Object files
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE files
+.vscode/
+.idea/
+*~#
