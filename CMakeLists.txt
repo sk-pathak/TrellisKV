@@ -19,6 +19,9 @@ endif()
 
 # Find required packages
 find_package(Threads REQUIRED)
+find_package(nlohmann_json QUIET)
+add_library(nlohmann_json INTERFACE)
+add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
 
 # Include directories
 include_directories(include)
@@ -30,7 +33,7 @@ file(GLOB_RECURSE HEADERS "include/*.h")
 
 # Create main executable
 add_executable(trellis ${SOURCES} ${HEADERS})
-target_link_libraries(trellis Threads::Threads)
+target_link_libraries(trellis Threads::Threads nlohmann_json::nlohmann_json)
 
 # Installation
 install(TARGETS trellis

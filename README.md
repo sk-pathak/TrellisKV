@@ -15,16 +15,16 @@ Repository layout
 Plans
 --------------------
 
-- Strong or eventual consistency -> conflict?
+- eventual consistency -> conflict?
 - replication
 - sharding
 - communication (tcp)
 - data transfer?
-- eviction? lru/lfu
+- eviction? lru
 - cli
 - concurrency
 
 Next
 --------------------
 
-- 
+- requests
