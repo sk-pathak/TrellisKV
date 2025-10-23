@@ -1,42 +1,41 @@
 #include "trelliskv/logger.h"
-#include "trelliskv/storage_engine.h"
-#include <iostream>
+#include "trelliskv/network_manager.h"
+
+#include <chrono>
+#include <csignal>
+#include <thread>
+
+static volatile std::sig_atomic_t g_stop = 0;
+static trelliskv::NetworkManager* g_net_ptr = nullptr;
+
+void handle_sigint(int) {
+    g_stop = 1;
+    if (g_net_ptr) {
+        g_net_ptr->stop();
+    }
+}
 
 int main() {
-    std::cout << "TrellisKV - Testing Storage Engine" << std::endl;
-
     auto &logger = trelliskv::Logger::instance();
-    logger.info("Starting storage engine test");
+    logger.info("TrellisKV - TCP server");
 
-    trelliskv::StorageEngine storage;
+    trelliskv::NetworkManager net;
+    g_net_ptr = &net;
+    
+    std::signal(SIGINT, handle_sigint);
 
-    // Test put
-    logger.info("Testing PUT operation");
-    storage.put("key1", "value1");
-    storage.put("key2", "value2");
-    storage.put("name", "TrellisKV");
+    const uint16_t port = 5000;
 
-    // Test get
-    logger.info("Testing GET operation");
-    std::string val1 = storage.get("key1");
-    std::string val2 = storage.get("key2");
-    std::string name = storage.get("name");
+    net.start(port);
 
-    std::cout << "key1 = " << val1 << std::endl;
-    std::cout << "key2 = " << val2 << std::endl;
-    std::cout << "name = " << name << std::endl;
+    logger.info("Press Ctrl+C to stop");
+    while (!g_stop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
 
-    // Test contains
-    logger.info("Testing CONTAINS operation");
-    std::cout << "Contains key1: " << (storage.contains("key1") ? "yes" : "no") << std::endl;
-    std::cout << "Contains key3: " << (storage.contains("key3") ? "yes" : "no") << std::endl;
-
-    // Test remove
-    logger.info("Testing REMOVE operation");
-    storage.remove("key1");
-    std::cout << "After removing key1, contains: " << (storage.contains("key1") ? "yes" : "no") << std::endl;
-
-    logger.info("Storage engine test completed");
+    logger.info("Shutting down...");
+    net.stop();
+    g_net_ptr = nullptr;
 
     return 0;
 }

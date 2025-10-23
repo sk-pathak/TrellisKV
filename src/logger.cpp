@@ -12,6 +12,10 @@ void Logger::info(const std::string &message) {
     log("INFO", message);
 }
 
+void Logger::warn(const std::string &message) {
+    log("WARN", message);
+}
+
 void Logger::error(const std::string &message) {
     log("ERROR", message);
 }
