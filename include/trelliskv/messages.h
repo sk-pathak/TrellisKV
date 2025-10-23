@@ -35,4 +35,20 @@ struct DeleteRequest {
     std::string key;
 };
 
+struct GetResponse {
+    bool success;
+    std::string value;
+    std::string error;
+};
+
+struct PutResponse {
+    bool success;
+    std::string error;
+};
+
+struct DeleteResponse {
+    bool success;
+    std::string error;
+};
+
 } // namespace trelliskv

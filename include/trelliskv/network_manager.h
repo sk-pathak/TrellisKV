@@ -6,6 +6,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <storage_engine.h>
 
 namespace trelliskv {
 
@@ -16,7 +17,7 @@ class NetworkManager {
     NetworkManager();
     ~NetworkManager();
 
-    bool start(uint16_t port, RequestHandler handler = nullptr);
+    bool start(uint16_t port, StorageEngine* storage);
 
     void stop();
 
@@ -25,10 +26,11 @@ class NetworkManager {
   private:
     void accept_loop(uint16_t port);
     std::string handle_connection(int client_fd);
+    std::string process_request(const std::string& request_json);
 
     std::atomic<bool> running_{false};
     std::thread accept_thread_{};
-    RequestHandler handler_{}; // if null, echo back input
+    StorageEngine* storage_{nullptr};
     int listen_fd_{-1};
 };
 
