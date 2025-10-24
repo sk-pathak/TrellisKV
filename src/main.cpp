@@ -1,6 +1,7 @@
 #include "trelliskv/logger.h"
 #include "trelliskv/network_manager.h"
 #include "trelliskv/storage_engine.h"
+#include "trelliskv/trellis_node.h"
 
 #include <chrono>
 #include <csignal>
@@ -18,14 +19,11 @@ int main() {
 
     std::signal(SIGINT, handle_sigint);
 
-    trelliskv::StorageEngine storage;
-    logger.info("StorageEngine initialized");
-
-    trelliskv::NetworkManager net;
+    trelliskv::TrellisNode node;
     const uint16_t port = 5000;
 
-    if (!net.start(port, &storage)) {
-        logger.error("Failed to start NetworkManager");
+    if (!node.start(port)) {
+        logger.error("Failed to start TrellisNode");
         return 1;
     }
 
@@ -38,7 +36,7 @@ int main() {
     }
 
     logger.info("Shutting down...");
-    net.stop();
+    node.stop();
     logger.info("Goodbye!");
 
     return 0;
