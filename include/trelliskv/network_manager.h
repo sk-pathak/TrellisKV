@@ -6,11 +6,10 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <storage_engine.h>
 
 namespace trelliskv {
 
-using RequestHandler = std::function<std::string(const std::string&)>;
+class StorageEngine;
 
 class NetworkManager {
   public:

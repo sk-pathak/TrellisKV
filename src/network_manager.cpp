@@ -37,6 +37,7 @@ void NetworkManager::stop() {
     running_ = false;
 
     if (listen_fd_ >= 0) {
+        ::shutdown(listen_fd_,SHUT_RDWR);
         ::close(listen_fd_);
         listen_fd_ = -1;
     }
