@@ -2,7 +2,7 @@
 
 - Trellis: distributed cache
 
-Repository layout
+## Repository layout
 ---------------------------------
 
 - `src/` — main application code
@@ -12,7 +12,23 @@ Repository layout
 - `scripts/` — testing+benchmarks. (later)
 - `docker/` — docker things. (later)
 
-Plans
+## Quick build
+---------------------
+
+### Prerequisites
+
+- CMake 3.20+
+- C++17 compiler (GCC 7+, Clang 5+)
+- Docker + Docker Compose (for cluster mode)
+
+### Build
+
+- `git clone https://github.com/sk-pathak/trellisKV.git`
+- `mkdir -p build && cd build`
+- `cmake ..`
+- `make -j$(nproc)`
+
+## Plans
 --------------------
 
 - eventual consistency -> conflict?
@@ -24,7 +40,7 @@ Plans
 - cli
 - concurrency
 
-Next
+## Next
 --------------------
 
 - thread pool?
