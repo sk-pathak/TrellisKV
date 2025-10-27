@@ -13,8 +13,13 @@
 
 namespace trelliskv {
 
-NetworkManager::NetworkManager() {}
-NetworkManager::~NetworkManager() { stop(); }
+NetworkManager::NetworkManager() {
+    thread_pool_ = std::make_unique<ThreadPool>(4);
+}
+
+NetworkManager::~NetworkManager() {
+    stop();
+}
 
 bool NetworkManager::start(uint16_t port, StorageEngine *storage) {
     if (running_)
@@ -93,20 +98,21 @@ void NetworkManager::accept_loop(uint16_t port) {
             continue;
         }
 
-        std::string response = handle_connection(client_fd);
-        (void)response;
-
-        ::close(client_fd);
+        thread_pool_->submit([this, client_fd]() {
+            handle_client(client_fd);
+        });
     }
 }
 
-std::string NetworkManager::handle_connection(int client_fd) {
+void NetworkManager::handle_client(int client_fd) {
     char buffer[4096];
     std::memset(buffer, 0, sizeof(buffer));
 
     ssize_t n = ::recv(client_fd, buffer, sizeof(buffer), 0);
     if (n <= 0) {
-        return {};
+        ::shutdown(client_fd, SHUT_RDWR);
+        ::close(client_fd);
+        return;
     }
 
     std::string request_json(buffer, buffer + n);
@@ -117,7 +123,8 @@ std::string NetworkManager::handle_connection(int client_fd) {
         ::send(client_fd, response_json.data(), response_json.size(), 0);
     }
 
-    return response_json;
+    ::shutdown(client_fd, SHUT_RDWR);
+    ::close(client_fd);
 }
 
 std::string NetworkManager::process_request(const std::string &request_json) {
