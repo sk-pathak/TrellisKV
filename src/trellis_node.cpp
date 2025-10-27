@@ -5,22 +5,24 @@
 
 namespace trelliskv {
 
-TrellisNode::TrellisNode()
-    : storage_(std::make_unique<StorageEngine>()),
+TrellisNode::TrellisNode(const NodeConfig& config)
+    : config_(config),
+      storage_(std::make_unique<StorageEngine>()),
       network_(std::make_unique<NetworkManager>()) {
     auto &logger = Logger::instance();
-    logger.info("TrellisNode created");
+    logger.info("TrellisNode created with node_id: " + config_.node_id);
+    logger.info("Configuration - Host: " + config_.hostname + ", Port: " + std::to_string(config_.port));
 }
 
 TrellisNode::~TrellisNode() {
     stop();
 }
 
-bool TrellisNode::start(uint16_t port) {
+bool TrellisNode::start() {
     auto &logger = Logger::instance();
-    logger.info("Starting TrellisNode on port " + std::to_string(port));
+    logger.info("Starting TrellisNode on " + config_.hostname + ":" + std::to_string(config_.port));
 
-    if (!network_->start(port, storage_.get())) {
+    if (!network_->start(config_.port, storage_.get())) {
         logger.error("Failed to start network manager");
         return false;
     }
