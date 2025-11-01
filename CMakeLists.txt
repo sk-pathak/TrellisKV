@@ -20,8 +20,10 @@ endif()
 # Find required packages
 find_package(Threads REQUIRED)
 find_package(nlohmann_json QUIET)
-add_library(nlohmann_json INTERFACE)
-add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+if(NOT nlohmann_json_FOUND)
+    add_library(nlohmann_json INTERFACE)
+    add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+endif()
 
 # Include directories
 include_directories(include)
