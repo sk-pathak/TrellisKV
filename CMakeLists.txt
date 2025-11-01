@@ -8,10 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Compiler flags
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic")
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DDEBUG")
+set(CMAKE_CXX_FLAGS_DEBUG "-g -O0 -DTDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -flto -ffast-math")
 
 # Performance optimization flags
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -funroll-loops -finline-functions")
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)

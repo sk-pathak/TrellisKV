@@ -9,7 +9,6 @@
 #include <unistd.h>
 
 #include <cstring>
-#include <iostream>
 
 namespace trelliskv {
 

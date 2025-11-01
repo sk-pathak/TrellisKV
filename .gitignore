@@ -1,28 +1,41 @@
 # Build directories
-build
-cmake-build-*/
+/build/
+out/
+bin/
+lib/
 
-# Compiled binaries
-trellis
-trellis-cli
-*.exe
-
-# Object files
-*.o
-*.obj
-*.so
-*.dylib
-*.dll
-
-# CMake files
+# CMake-generated files
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
-*.cmake
-!CMakeLists.txt
 
-# IDE files
+# VSCode settings and caches
 .vscode/
-.idea/
-*~#
+.clangd/
+.clang-tidy
+.clang-format
+.cache
+
+# Editor / OS junk
+*.swp
+*.swo
+*.DS_Store
+Thumbs.db
+
+# Object and binary files
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.old

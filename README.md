@@ -24,9 +24,8 @@
 ### Build
 
 - `git clone https://github.com/sk-pathak/trellisKV.git`
-- `mkdir -p build && cd build`
-- `cmake ..`
-- `make -j$(nproc)`
+- `cmake --preset debug`
+- `cmake --build --preset debug`
 
 ## Plans
 --------------------
