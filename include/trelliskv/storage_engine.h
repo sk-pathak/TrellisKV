@@ -2,12 +2,14 @@
 
 #include <string>
 #include <unordered_map>
+#include <mutex>
 
 namespace trelliskv {
 
 class StorageEngine {
   private:
     std::unordered_map<std::string, std::string> data_;
+    mutable std::mutex mutex_;
 
   public:
     StorageEngine() = default;

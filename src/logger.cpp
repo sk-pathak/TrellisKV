@@ -1,5 +1,7 @@
 #include "trelliskv/logger.h"
 #include <iostream>
+#include <chrono>
+#include <iomanip>
 
 namespace trelliskv {
 
@@ -9,22 +11,50 @@ Logger &Logger::instance() {
 }
 
 void Logger::info(const std::string &message) {
-    log("INFO", message);
+    log(LogLevel::INFO, message);
 }
 
 void Logger::warn(const std::string &message) {
-    log("WARN", message);
+    log(LogLevel::WARN, message);
 }
 
 void Logger::error(const std::string &message) {
-    log("ERROR", message);
+    log(LogLevel::ERROR, message);
 }
 
-void Logger::log(const std::string &level, const std::string &message) {
-    if (level == "ERROR") {
-        std::cerr << "[" << level << "] " << message << std::endl;
-    } else {
-        std::cout << "[" << level << "] " << message << std::endl;
+void Logger::set_level(LogLevel level) {
+    current_level_ = level;
+}
+
+std::string Logger::level_to_string(LogLevel level) {
+    switch (level) {
+    case LogLevel::INFO:
+        return "INFO";
+    case LogLevel::WARN:
+        return "WARN";
+    case LogLevel::ERROR:
+        return "ERROR";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+void Logger::log(LogLevel level, const std::string &message) {
+    try {
+        using namespace std::chrono;
+        auto now = system_clock::now();
+        auto time = system_clock::to_time_t(now);
+        auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
+
+        std::ostringstream oss;
+        oss << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S")
+            << '.' << std::setw(3) << std::setfill('0') << ms.count();
+        
+        auto formatted = oss.str() + " [" + level_to_string(level) + "] " + message;
+
+        (level == LogLevel::ERROR ? std::cerr : std::cout) << formatted << '\n';
+    } catch (const std::exception &e) {
+        std::cerr << "[ERROR] Logger exception: " << e.what() << " - Original message: " << message << '\n';
     }
 }
 
