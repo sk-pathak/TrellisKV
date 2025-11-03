@@ -1,7 +1,6 @@
 #pragma once
 
 #include "messages.h"
-#include "nlohmann/json.hpp"
 #include <string>
 
 namespace trelliskv {

@@ -1,6 +1,4 @@
 #include "trelliskv/logger.h"
-#include "trelliskv/network_manager.h"
-#include "trelliskv/storage_engine.h"
 #include "trelliskv/trellis_node.h"
 
 #include <chrono>

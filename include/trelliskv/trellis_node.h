@@ -4,7 +4,6 @@
 #include "trelliskv/storage_engine.h"
 #include "trelliskv/node_config.h"
 
-#include <cstdint>
 #include <memory>
 #include <string>
 

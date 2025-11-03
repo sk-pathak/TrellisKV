@@ -27,7 +27,7 @@ class Logger {
     Logger() = default;
     ~Logger() = default;
 
-    LogLevel current_level_{LogLevel::WARN};
+    LogLevel current_level_{LogLevel::INFO};
     void log(LogLevel level, const std::string &message);
 };
 

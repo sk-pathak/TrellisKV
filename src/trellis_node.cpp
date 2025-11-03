@@ -1,7 +1,6 @@
 #include "trelliskv/trellis_node.h"
-#include "trelliskv/json_serializer.h"
+
 #include "trelliskv/logger.h"
-#include "trelliskv/messages.h"
 
 namespace trelliskv {
 
@@ -9,20 +8,20 @@ TrellisNode::TrellisNode(const NodeConfig& config)
     : config_(config),
       storage_(std::make_unique<StorageEngine>()),
       network_(std::make_unique<NetworkManager>()) {
-    auto &logger = Logger::instance();
+    auto& logger = Logger::instance();
     logger.info("TrellisNode created with node_id: " + config_.node_id);
-    logger.info("Configuration - Host: " + config_.hostname + ", Port: " + std::to_string(config_.port));
+    logger.info("Configuration - Host: " + config_.hostname +
+                ", Port: " + std::to_string(config_.port));
 }
 
-TrellisNode::~TrellisNode() {
-    stop();
-}
+TrellisNode::~TrellisNode() { stop(); }
 
 bool TrellisNode::start() {
-    auto &logger = Logger::instance();
-    logger.info("Starting TrellisNode on " + config_.hostname + ":" + std::to_string(config_.port));
+    auto& logger = Logger::instance();
+    logger.info("Starting TrellisNode on " + config_.hostname + ":" +
+                std::to_string(config_.port));
 
-    if (!network_->start(config_.port, storage_.get())) {
+    if (!network_->start(config_.port, storage_.get(), config_.node_id)) {
         logger.error("Failed to start network manager");
         return false;
     }
@@ -32,7 +31,7 @@ bool TrellisNode::start() {
 }
 
 void TrellisNode::stop() {
-    auto &logger = Logger::instance();
+    auto& logger = Logger::instance();
     logger.info("Stopping TrellisNode");
 
     if (network_) {
@@ -47,10 +46,11 @@ bool TrellisNode::is_running() const {
 }
 
 std::string TrellisNode::handle_request(const std::string& request_json) {
-    auto &logger = Logger::instance();
+    auto& logger = Logger::instance();
     logger.info("TrellisNode handling request");
     // handle request_json
+    (void)request_json;  // Mark as intentionally unused
     return "";
 }
 
-} // namespace trelliskv
+}  // namespace trelliskv
