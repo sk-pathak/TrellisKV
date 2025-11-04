@@ -33,13 +33,17 @@
 - eventual consistency -> conflict?
 - replication
 - sharding
-- communication (tcp)
+- communication pooling??
 - data transfer?
-- eviction? lru
+- eviction? lru+ttl
 - cli
 - concurrency
+- optimizations?? (parallel algos?, UDS)
 
 ## Next
 --------------------
 
-- thread pool?
+- generic templates
+- tcp client
+- cli
+- hash ring (consistent hashing)
