@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "result.h"
 #include "versioned_value.h"
 
 namespace trelliskv {
@@ -17,10 +18,14 @@ class StorageEngine {
     StorageEngine();
     ~StorageEngine();
 
-    void put(const std::string& key, const VersionedValue& value);
-    VersionedValue get(const std::string& key) const;
-    bool remove(const std::string& key);
-    bool contains(const std::string& key) const;
+    Result<void> put(const std::string& key, const VersionedValue& value);
+    Result<VersionedValue> get(const std::string& key) const;
+    Result<bool> remove(const std::string& key);
+    Result<bool> contains(const std::string& key) const;
+    size_t size() const;
+    bool empty() const;
+    void clear();
+    std::vector<std::string> get_all_keys() const;
 };
 
 }  // namespace trelliskv

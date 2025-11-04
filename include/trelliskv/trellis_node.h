@@ -1,20 +1,21 @@
 #pragma once
 
-#include "trelliskv/network_manager.h"
-#include "trelliskv/storage_engine.h"
-#include "trelliskv/node_config.h"
-
 #include <memory>
 #include <string>
+
+#include "trelliskv/network_manager.h"
+#include "trelliskv/node_config.h"
+#include "trelliskv/result.h"
+#include "trelliskv/storage_engine.h"
 
 namespace trelliskv {
 
 class TrellisNode {
-  public:
+   public:
     TrellisNode(const NodeConfig& config);
     ~TrellisNode();
 
-    bool start();
+    Result<void> start();
 
     void stop();
 
@@ -22,7 +23,7 @@ class TrellisNode {
 
     const NodeConfig& get_config() const { return config_; }
 
-  private:
+   private:
     std::string handle_request(const std::string& request_json);
 
     NodeConfig config_;
@@ -31,4 +32,4 @@ class TrellisNode {
     std::unique_ptr<NetworkManager> network_;
 };
 
-} // namespace trelliskv
+}  // namespace trelliskv

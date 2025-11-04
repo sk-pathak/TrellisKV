@@ -26,8 +26,7 @@ bool NetworkManager::start(uint16_t port, StorageEngine* storage,
     storage_ = storage;
     node_id_ = node_id;
     if (!storage_) {
-        Logger::instance().error(
-            "Cannot start NetworkManager without StorageEngine");
+        LOG_ERROR("Cannot start NetworkManager without StorageEngine");
         return false;
     }
 
@@ -55,7 +54,7 @@ void NetworkManager::accept_loop(uint16_t port) {
     // Create socket
     listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd_ < 0) {
-        Logger::instance().error("Failed to create socket");
+        LOG_ERROR("Failed to create socket");
         running_ = false;
         return;
     }
@@ -70,7 +69,7 @@ void NetworkManager::accept_loop(uint16_t port) {
 
     if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) <
         0) {
-        Logger::instance().error("bind() failed");
+        LOG_ERROR("bind() failed");
         ::close(listen_fd_);
         listen_fd_ = -1;
         running_ = false;
@@ -78,15 +77,14 @@ void NetworkManager::accept_loop(uint16_t port) {
     }
 
     if (::listen(listen_fd_, 16) < 0) {
-        Logger::instance().error("listen() failed");
+        LOG_ERROR("listen() failed");
         ::close(listen_fd_);
         listen_fd_ = -1;
         running_ = false;
         return;
     }
 
-    Logger::instance().info("NetworkManager listening on port " +
-                            std::to_string(port));
+    LOG_INFO("NetworkManager listening on port " + std::to_string(port));
 
     while (running_) {
         sockaddr_in client_addr{};
@@ -95,7 +93,7 @@ void NetworkManager::accept_loop(uint16_t port) {
             listen_fd_, reinterpret_cast<sockaddr*>(&client_addr), &len);
         if (client_fd < 0) {
             if (!running_) break;
-            Logger::instance().error("accept() failed");
+            LOG_ERROR("accept() failed");
             continue;
         }
 
@@ -135,9 +133,9 @@ std::string NetworkManager::process_request(const std::string& request_json) {
         switch (req.type) {
             case RequestType::GET: {
                 if (storage_->contains(req.key)) {
-                    VersionedValue value = storage_->get(req.key);
+                    Result<VersionedValue> val = storage_->get(req.key);
                     resp.success = true;
-                    resp.value = value.value;
+                    resp.value = val.value().value;
                 } else {
                     resp.success = false;
                     resp.error = "Key not found";
