@@ -8,6 +8,8 @@ namespace trelliskv {
 using NodeId = std::string;
 using Timestamp = std::chrono::system_clock::time_point;
 
+enum class ResponseStatus { OK, NOT_FOUND, ERROR, CONFLICT, TIMEOUT };
+
 struct TimestampVersion {
     uint64_t timestamp;
     NodeId last_writer;

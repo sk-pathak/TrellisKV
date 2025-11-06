@@ -151,56 +151,62 @@ void NetworkManager::handle_client(int client_fd) {
 }
 
 std::string NetworkManager::process_request(const std::string& request_json) {
-    try {
-        Request req = JsonSerializer::deserialize_request(request_json);
-
-        Response resp;
-
-        switch (req.type) {
-            case RequestType::GET: {
-                if (storage_->contains(req.key)) {
-                    Result<VersionedValue> val = storage_->get(req.key);
-                    resp.success = true;
-                    resp.value = val.value().value;
-                } else {
-                    resp.success = false;
-                    resp.error = "Key not found";
-                }
-                break;
-            }
-
-            case RequestType::PUT: {
-                VersionedValue versioned_value(req.value, node_id_);
-                storage_->put(req.key, versioned_value);
-                resp.success = true;
-                break;
-            }
-
-            case RequestType::DELETE_KEY: {
-                if (storage_->contains(req.key)) {
-                    storage_->remove(req.key);
-                    resp.success = true;
-                } else {
-                    resp.success = false;
-                    resp.error = "Key not found";
-                }
-                break;
-            }
-
-            default:
-                resp.success = false;
-                resp.error = "Unknown request type";
-                break;
-        }
-
-        return JsonSerializer::serialize(resp);
-
-    } catch (const std::exception& e) {
-        Response error_resp;
-        error_resp.success = false;
-        error_resp.error = std::string("Error: ") + e.what();
-        return JsonSerializer::serialize(error_resp);
+    // Deserialize request
+    auto req_result = JsonSerializer::deserialize_request(request_json);
+    if (!req_result) {
+        Response error_resp = Response::error(
+            "Failed to deserialize request: " + req_result.error());
+        error_resp.responder_id = node_id_;
+        auto resp_str = JsonSerializer::serialize_response(error_resp);
+        return resp_str.value_or("");
     }
+
+    std::unique_ptr<Request>& req = req_result.value();
+    Response resp;
+    resp.request_id = req->request_id;
+    resp.responder_id = node_id_;
+
+    if (auto* get_req = dynamic_cast<GetRequest*>(req.get())) {
+        if (storage_->contains(get_req->key)) {
+            auto val_result = storage_->get(get_req->key);
+            if (val_result) {
+                resp = Response::success(val_result.value().value,
+                                         val_result.value().version);
+            } else {
+                resp = Response::error("Failed to retrieve value");
+            }
+        } else {
+            resp = Response::not_found();
+        }
+    } else if (auto* put_req = dynamic_cast<PutRequest*>(req.get())) {
+        VersionedValue versioned_value;
+        versioned_value.value = put_req->value;
+        versioned_value.version = TimestampVersion::now(node_id_);
+
+        storage_->put(put_req->key, versioned_value);
+        resp = Response::success(put_req->value, versioned_value.version);
+    } else if (auto* del_req = dynamic_cast<DeleteRequest*>(req.get())) {
+        if (storage_->contains(del_req->key)) {
+            storage_->remove(del_req->key);
+            resp = Response::success();
+        } else {
+            resp = Response::not_found();
+        }
+    } else {
+        resp = Response::error("Unknown request type");
+    }
+
+    resp.request_id = req->request_id;
+    resp.responder_id = node_id_;
+
+    // Serialize response
+    auto resp_result = JsonSerializer::serialize_response(resp);
+    if (!resp_result) {
+        LOG_ERROR("Failed to serialize response: " + resp_result.error());
+        return "";
+    }
+
+    return resp_result.value();
 }
 
 }  // namespace trelliskv

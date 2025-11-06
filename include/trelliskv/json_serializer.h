@@ -1,22 +1,38 @@
 #pragma once
 
-#include "messages.h"
 #include <string>
+
+#include "messages.h"
+#include "nlohmann/json.hpp"
+#include "result.h"
 
 namespace trelliskv {
 
-// Simple JSON serializer/deserializer for Request and Response messages.
 class JsonSerializer {
-  public:
-    static std::string serialize(const Request& request);
-    static std::string serialize(const Response& response);
-    
-    static Request deserialize_request(const std::string& json_str);    
-    static Response deserialize_response(const std::string& json_str);
-    
-  private:
-    static std::string request_type_to_string(RequestType type);    
-    static RequestType string_to_request_type(const std::string& type_str);
+   public:
+    // Request
+    static Result<std::string> serialize_request(const Request& request);
+    static Result<std::unique_ptr<Request>> deserialize_request(
+        const std::string& json_str);
+
+    // Response
+    static Result<std::string> serialize_response(const Response& response);
+    static Result<std::unique_ptr<Response>> deserialize_response(
+        const std::string& json_str);
+
+    // Helper methods for common types
+    static nlohmann::json serialize_timestamp_version(
+        const TimestampVersion& version);
+    static Result<TimestampVersion> deserialize_timestamp_version(
+        const nlohmann::json& json);
+
+    static nlohmann::json serialize_timestamp(const Timestamp& timestamp);
+    static Result<Timestamp> deserialize_timestamp(const nlohmann::json& json);
+
+    // Enum
+    static std::string response_status_to_string(ResponseStatus status);
+    static Result<ResponseStatus> string_to_response_status(
+        const std::string& str);
 };
 
-} // namespace trelliskv
+}  // namespace trelliskv
