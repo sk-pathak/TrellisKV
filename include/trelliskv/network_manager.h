@@ -20,6 +20,7 @@ class NetworkManager {
                const std::string& node_id);
 
     void stop();
+    void close_socket(int& fd);
 
     bool is_running() const { return running_; }
 

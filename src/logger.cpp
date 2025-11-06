@@ -11,13 +11,17 @@ Logger& Logger::instance() {
     return instance;
 }
 
-void Logger::info(const std::string& message) { log(LogLevel::INFO, message); }
-
-void Logger::warn(const std::string& message) { log(LogLevel::WARN, message); }
-
 void Logger::error(const std::string& message) {
     log(LogLevel::ERROR, message);
 }
+
+void Logger::debug(const std::string& message) {
+    log(LogLevel::DEBUG, message);
+}
+
+void Logger::info(const std::string& message) { log(LogLevel::INFO, message); }
+
+void Logger::warn(const std::string& message) { log(LogLevel::WARN, message); }
 
 void Logger::set_level(LogLevel level) { current_level_ = level; }
 
@@ -29,6 +33,8 @@ std::string Logger::level_to_string(LogLevel level) {
             return "WARN";
         case LogLevel::ERROR:
             return "ERROR";
+        case LogLevel::DEBUG:
+            return "DEBUG";
         default:
             return "UNKNOWN";
     }
