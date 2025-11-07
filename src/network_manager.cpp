@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <vector>
 
 #include "trelliskv/json_serializer.h"
 #include "trelliskv/logger.h"
@@ -123,28 +124,74 @@ void NetworkManager::accept_loop(uint16_t port) {
 }
 
 void NetworkManager::handle_client(int client_fd) {
-    char buffer[4096];
-    std::memset(buffer, 0, sizeof(buffer));
+    struct timeval tv;
+    tv.tv_sec = 5;
+    tv.tv_usec = 0;
+    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    ssize_t n = ::recv(client_fd, buffer, sizeof(buffer), 0);
-    if (n <= 0) {
+    if (!running_) {
+        close_socket(client_fd);
+        return;
+    }
+
+    uint32_t message_length = 0;
+    ssize_t n =
+        ::recv(client_fd, &message_length, sizeof(message_length), MSG_WAITALL);
+    if (n != sizeof(message_length)) {
         if (n < 0) {
-            LOG_DEBUG("recv() error: " + std::string(strerror(errno)));
+            LOG_DEBUG("recv() error reading length: " +
+                      std::string(strerror(errno)));
         }
         close_socket(client_fd);
         return;
     }
 
-    std::string request_json(buffer, buffer + n);
+    message_length = ntohl(message_length);
+
+    if (message_length == 0 || message_length > 1024 * 1024) {
+        LOG_DEBUG("Invalid message length: " + std::to_string(message_length));
+        close_socket(client_fd);
+        return;
+    }
+
+    std::vector<char> buffer(message_length);
+    n = ::recv(client_fd, buffer.data(), message_length, MSG_WAITALL);
+    if (n != static_cast<ssize_t>(message_length)) {
+        if (n < 0) {
+            LOG_DEBUG("recv() error reading message: " +
+                      std::string(strerror(errno)));
+        }
+        close_socket(client_fd);
+        return;
+    }
+
+    std::string request_json(buffer.begin(), buffer.end());
 
     std::string response_json = process_request(request_json);
 
-    if (!response_json.empty()) {
-        ssize_t sent =
-            ::send(client_fd, response_json.data(), response_json.size(), 0);
-        if (sent < 0) {
-            LOG_DEBUG("send() error: " + std::string(strerror(errno)));
-        }
+    if (response_json.empty()) {
+        LOG_ERROR("Empty response generated, sending error response");
+        Response error_resp = Response::error("Internal server error");
+        error_resp.responder_id = node_id_;
+        auto resp_str = JsonSerializer::serialize_response(error_resp);
+        response_json = resp_str.value_or("{}");
+    }
+
+    uint32_t response_length =
+        htonl(static_cast<uint32_t>(response_json.size()));
+    ssize_t sent =
+        ::send(client_fd, &response_length, sizeof(response_length), 0);
+    if (sent != sizeof(response_length)) {
+        LOG_DEBUG("send() error sending length: " +
+                  std::string(strerror(errno)));
+        close_socket(client_fd);
+        return;
+    }
+
+    sent = ::send(client_fd, response_json.data(), response_json.size(), 0);
+    if (sent < 0) {
+        LOG_DEBUG("send() error: " + std::string(strerror(errno)));
     }
 
     close_socket(client_fd);
@@ -163,8 +210,6 @@ std::string NetworkManager::process_request(const std::string& request_json) {
 
     std::unique_ptr<Request>& req = req_result.value();
     Response resp;
-    resp.request_id = req->request_id;
-    resp.responder_id = node_id_;
 
     if (auto* get_req = dynamic_cast<GetRequest*>(req.get())) {
         if (storage_->contains(get_req->key)) {
