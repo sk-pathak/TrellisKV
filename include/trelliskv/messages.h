@@ -26,6 +26,7 @@ struct GetRequest : public Request {
     std::optional<TimestampVersion> client_version;
 
     GetRequest() = default;
+    explicit GetRequest(const std::string& k) : key(k) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;
@@ -38,6 +39,7 @@ struct PutRequest : public Request {
     bool is_replication = false;
 
     PutRequest() = default;
+    PutRequest(const std::string& k, const std::string& v) : key(k), value(v) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;
@@ -48,6 +50,7 @@ struct DeleteRequest : public Request {
     std::optional<TimestampVersion> expected_version;
 
     DeleteRequest() = default;
+    explicit DeleteRequest(const std::string& k) : key(k) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;

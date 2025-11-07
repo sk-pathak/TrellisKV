@@ -38,7 +38,11 @@ file(GLOB_RECURSE HEADERS "include/*.h")
 add_executable(trellis ${SOURCES} ${HEADERS})
 target_link_libraries(trellis Threads::Threads nlohmann_json::nlohmann_json)
 
+# Create CLI client executable
+add_executable(trellis-cli src/cli/main.cpp src/tcp_client.cpp src/json_serializer.cpp src/messages.cpp)
+target_link_libraries(trellis-cli Threads::Threads nlohmann_json::nlohmann_json)
+
 # Installation
-install(TARGETS trellis
+install(TARGETS trellis trellis-cli
     RUNTIME DESTINATION bin
 )
