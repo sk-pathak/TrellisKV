@@ -38,8 +38,9 @@ Result<VersionedValue> StorageEngine::get(const std::string& key) const {
 Result<bool> StorageEngine::remove(const std::string& key) {
     try {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (contains(key)) {
-            data_.erase(key);
+        auto it = data_.find(key);
+        if (it != data_.end()) {
+            data_.erase(it);
             return Result<bool>::success(true);
         }
         return Result<bool>::success(false);
