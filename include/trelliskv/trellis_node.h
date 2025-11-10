@@ -1,7 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <string>
 
 #include "trelliskv/network_manager.h"
 #include "trelliskv/node_config.h"
@@ -24,7 +23,7 @@ class TrellisNode {
     const NodeConfig& get_config() const { return config_; }
 
    private:
-    std::string handle_request(const std::string& request_json);
+    std::unique_ptr<Response> handle_request(const Request& request_json);
 
     NodeConfig config_;
 
