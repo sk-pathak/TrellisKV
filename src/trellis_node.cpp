@@ -11,6 +11,11 @@ TrellisNode::TrellisNode(const NodeConfig& config)
     LOG_INFO("TrellisNode created with node_id: " + config_.node_id);
     LOG_INFO("Configuration - Host: " + config_.hostname +
              ", Port: " + std::to_string(config_.port));
+
+    network_->set_message_handler(
+        [this](const Request& request) -> std::unique_ptr<Response> {
+            return handle_request(request);
+        });
 }
 
 TrellisNode::~TrellisNode() { stop(); }
@@ -19,7 +24,7 @@ Result<void> TrellisNode::start() {
     LOG_INFO("Starting TrellisNode on " + config_.hostname + ":" +
              std::to_string(config_.port));
 
-    if (!network_->start(config_.port, storage_.get(), config_.node_id)) {
+    if (!network_->start_server(config_.port)) {
         return Result<void>::error("Failed to start network manager");
     }
 
@@ -31,21 +36,23 @@ void TrellisNode::stop() {
     LOG_INFO("Stopping TrellisNode");
 
     if (network_) {
-        network_->stop();
+        network_->stop_server();
     }
 
     LOG_INFO("TrellisNode stopped");
 }
 
 bool TrellisNode::is_running() const {
-    return network_ && network_->is_running();
+    return network_ && network_->is_server_running();
 }
 
-std::string TrellisNode::handle_request(const std::string& request_json) {
+std::unique_ptr<Response> TrellisNode::handle_request(
+    const Request& request_json) {
     LOG_INFO("TrellisNode handling request");
     // handle request_json
-    (void)request_json;  // Mark as intentionally unused
-    return "";
+    (void)request_json;
+    std::unique_ptr<Response> res;
+    return res;
 }
 
 }  // namespace trelliskv
