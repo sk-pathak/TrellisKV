@@ -36,14 +36,10 @@
 - communication pooling??
 - data transfer?
 - eviction? lru+ttl
-- cli
 - concurrency
 - optimizations?? (parallel algos?, UDS)
 
 ## Next
 --------------------
 
-- generic templates
-- tcp client
-- cli
 - hash ring (consistent hashing)

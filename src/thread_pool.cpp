@@ -1,66 +1,64 @@
 #include "trelliskv/thread_pool.h"
 
-#include "trelliskv/logger.h"
+#include <iostream>
 
 namespace trelliskv {
 
-ThreadPool::ThreadPool(size_t num_threads) {
-    LOG_INFO("Creating thread pool with " + std::to_string(num_threads) +
-             " threads");
-
+ThreadPool::ThreadPool(size_t num_threads) : stop_(false) {
     for (size_t i = 0; i < num_threads; ++i) {
-        workers_.emplace_back([this]() { worker_loop(); });
+        workers_.emplace_back([this] {
+            for (;;) {
+                std::function<void()> task;
+
+                {
+                    std::unique_lock<std::mutex> lock(queue_mutex_);
+                    condition_.wait(
+                        lock, [this] { return stop_ || !tasks_.empty(); });
+
+                    if (stop_ && tasks_.empty()) {
+                        return;
+                    }
+
+                    task = std::move(tasks_.front());
+                    tasks_.pop();
+                }
+
+                try {
+                    task();
+                } catch (const std::exception& e) {
+                    std::cerr << "ThreadPool: Exception in task: " << e.what()
+                              << std::endl;
+                } catch (...) {
+                    std::cerr << "ThreadPool: Unknown exception in task"
+                              << std::endl;
+                }
+            }
+        });
     }
 }
 
-ThreadPool::~ThreadPool() {
-    stop_ = true;
-    cv_.notify_all();
+ThreadPool::~ThreadPool() { shutdown(); }
 
-    for (auto& worker : workers_) {
+void ThreadPool::shutdown() {
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        stop_ = true;
+    }
+
+    condition_.notify_all();
+
+    for (std::thread& worker : workers_) {
         if (worker.joinable()) {
             worker.join();
         }
     }
 
-    LOG_INFO("Thread pool stopped");
+    workers_.clear();
 }
 
-void ThreadPool::submit(std::function<void()> task) {
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        tasks_.push(std::move(task));
-    }
-    cv_.notify_one();
-}
-
-void ThreadPool::worker_loop() {
-    while (!stop_) {
-        std::function<void()> task;
-
-        {
-            std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait(lock, [this]() { return stop_ || !tasks_.empty(); });
-
-            if (stop_ && tasks_.empty()) {
-                return;
-            }
-
-            if (!tasks_.empty()) {
-                task = std::move(tasks_.front());
-                tasks_.pop();
-            }
-        }
-
-        if (task) {
-            try {
-                task();
-            } catch (const std::exception& e) {
-                LOG_ERROR("Exception in thread pool task: " +
-                          std::string(e.what()));
-            }
-        }
-    }
+size_t ThreadPool::get_queue_size() const {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    return tasks_.size();
 }
 
 }  // namespace trelliskv
