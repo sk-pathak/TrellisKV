@@ -1,257 +1,579 @@
 #include "trelliskv/network_manager.h"
 
 #include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <cstring>
-#include <vector>
+#include <iostream>
+#include <thread>
 
 #include "trelliskv/json_serializer.h"
-#include "trelliskv/logger.h"
-#include "trelliskv/storage_engine.h"
+#include "trelliskv/messages.h"
+#include "trelliskv/node_info.h"
+#include "trelliskv/thread_pool.h"
 
 namespace trelliskv {
 
-NetworkManager::NetworkManager() {
-    thread_pool_ = std::make_unique<ThreadPool>(4);
-}
+class SocketGuard {
+    int socket_;
+    bool released_ = false;
 
-NetworkManager::~NetworkManager() { stop(); }
+    void graceful_close() {
+        if (socket_ < 0) return;
 
-bool NetworkManager::start(uint16_t port, StorageEngine* storage,
-                           const std::string& node_id) {
-    if (running_) return true;
-
-    storage_ = storage;
-    node_id_ = node_id;
-    if (!storage_) {
-        LOG_ERROR("Cannot start NetworkManager without StorageEngine");
-        return false;
+        shutdown(socket_, SHUT_RDWR);
+        close(socket_);
     }
 
-    running_ = true;
-    accept_thread_ = std::thread([this, port]() { accept_loop(port); });
-    return true;
+   public:
+    explicit SocketGuard(int socket) : socket_(socket) {}
+    ~SocketGuard() {
+        if (!released_ && socket_ >= 0) {
+            graceful_close();
+        }
+    }
+    int get() const { return socket_; }
+    void release() { released_ = true; }
+
+    SocketGuard(const SocketGuard&) = delete;
+    SocketGuard& operator=(const SocketGuard&) = delete;
+};
+
+NetworkManager::NetworkManager(uint16_t port)
+    : server_socket_(-1),
+      server_port_(port),
+      server_running_(false),
+      thread_pool_(std::make_unique<ThreadPool>(
+          std::thread::hardware_concurrency() * 2)),
+      next_connection_id_(1) {
+    stats_.start_time = std::chrono::system_clock::now();
 }
 
-void NetworkManager::stop() {
-    if (!running_) return;
-    running_ = false;
+NetworkManager::~NetworkManager() {
+    stop_server();
+    close_all_connections();
+}
 
-    close_socket(listen_fd_);
+Result<void> NetworkManager::start_server(uint16_t port) {
+    if (server_running_.load()) {
+        return Result<void>::error("Server is already running");
+    }
+
+    // Create socket
+    server_socket_ = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket_ < 0) {
+        return Result<void>::error("Failed to create socket: " +
+                                   std::string(strerror(errno)));
+    }
+
+    // Set socket options
+    auto opt_result = set_socket_options(server_socket_);
+    if (!opt_result) {
+        close_socket(server_socket_);
+        return opt_result;
+    }
+
+    // Bind
+    struct sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(port);
+
+    if (bind(server_socket_, (struct sockaddr*)&server_addr,
+             sizeof(server_addr)) < 0) {
+        close_socket(server_socket_);
+        return Result<void>::error("Failed to bind socket to port " +
+                                   std::to_string(port) + ": " +
+                                   std::string(strerror(errno)));
+    }
+
+    // Listen for connections
+    const int backlog = 128;
+    if (listen(server_socket_, backlog) < 0) {
+        close_socket(server_socket_);
+        return Result<void>::error("Failed to listen on socket: " +
+                                   std::string(strerror(errno)));
+    }
+
+    if (port == 0) {
+        struct sockaddr_in addr{};
+        socklen_t addr_len = sizeof(addr);
+        if (getsockname(server_socket_, (struct sockaddr*)&addr, &addr_len) ==
+            0) {
+            server_port_ = ntohs(addr.sin_port);
+        }
+    } else {
+        server_port_ = port;
+    }
+
+    server_running_.store(true);
+
+    // Set sockets to non-blocking mode
+    int flags = fcntl(server_socket_, F_GETFL, 0);
+    fcntl(server_socket_, F_SETFL, flags | O_NONBLOCK);
+
+    // Start accept threads
+    accept_thread_ = std::thread(&NetworkManager::accept_connections, this);
+
+    return Result<void>::success();
+}
+
+void NetworkManager::stop_server() {
+    if (!server_running_.load()) {
+        return;
+    }
+
+    server_running_.store(false);
+
+    if (server_socket_ >= 0) {
+        close_socket(server_socket_);
+        server_socket_ = -1;
+    }
 
     if (accept_thread_.joinable()) {
         accept_thread_.join();
     }
 
-    if (thread_pool_) {
-        thread_pool_.reset();
+    close_all_connections();
+    thread_pool_->shutdown();
+}
+
+bool NetworkManager::is_server_running() const {
+    return server_running_.load();
+}
+
+uint16_t NetworkManager::get_server_port() const { return server_port_; }
+
+void NetworkManager::set_message_handler(MessageHandler handler) {
+    message_handler_ = std::move(handler);
+}
+
+Result<std::unique_ptr<Response>> NetworkManager::send_request(
+    const NodeAddress& target, const Request& request,
+    std::chrono::milliseconds timeout) {
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.total_requests_sent++;
+    }
+
+    // Create new socket for request
+    auto socket_result = create_client_socket(target, timeout);
+    if (!socket_result) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.failed_requests++;
+        return Result<std::unique_ptr<Response>>::error(socket_result.error());
+    }
+
+    SocketGuard socket_guard(socket_result.value());
+
+    // Serialize and send request
+    auto serialized_request = JsonSerializer::serialize_request(request);
+    if (!serialized_request) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.failed_requests++;
+        return Result<std::unique_ptr<Response>>::error(
+            serialized_request.error());
+    }
+
+    auto send_result =
+        send_message(socket_result.value(), serialized_request.value());
+    if (!send_result) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.failed_requests++;
+        return Result<std::unique_ptr<Response>>::error(send_result.error());
+    }
+
+    // get the response
+    auto receive_result = receive_message(socket_result.value());
+    if (!receive_result) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.failed_requests++;
+        return Result<std::unique_ptr<Response>>::error(receive_result.error());
+    }
+
+    auto response =
+        JsonSerializer::deserialize_response(receive_result.value());
+    if (!response) {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_.failed_requests++;
+        return Result<std::unique_ptr<Response>>::error(response.error());
+    }
+
+    return response;
+}
+
+void NetworkManager::close_connection(ConnectionId conn_id) {
+    cleanup_connection(conn_id);
+}
+
+void NetworkManager::close_all_connections() {
+    std::vector<std::thread> threads_to_join;
+
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex_);
+        threads_to_join.reserve(active_connections_.size());
+
+        for (auto& [conn_id, thread] : active_connections_) {
+            if (thread.joinable()) {
+                threads_to_join.emplace_back(std::move(thread));
+            }
+        }
+
+        active_connections_.clear();
+    }
+
+    const auto join_timeout = std::chrono::seconds(5);
+    auto start_time = std::chrono::steady_clock::now();
+
+    for (auto& thread : threads_to_join) {
+        if (thread.joinable()) {
+            auto elapsed = std::chrono::steady_clock::now() - start_time;
+            if (elapsed > join_timeout) {
+                thread.detach();
+            } else {
+                try {
+                    thread.join();
+                } catch (const std::exception& e) {
+                    // Silent error handling
+                }
+            }
+        }
     }
 }
 
-void NetworkManager::close_socket(int& fd) {
-    if (fd >= 0) {
-        ::shutdown(fd, SHUT_RDWR);
-        ::close(fd);
-        fd = -1;
+size_t NetworkManager::get_active_connections_count() const {
+    std::lock_guard<std::mutex> lock(connections_mutex_);
+    return active_connections_.size();
+}
+
+NetworkManager::NetworkStats NetworkManager::get_stats() const {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    auto stats = stats_;
+    stats.active_connections = get_active_connections_count();
+    return stats;
+}
+
+void NetworkManager::accept_connections() {
+    while (server_running_.load()) {
+        struct sockaddr_in client_addr{};
+        socklen_t client_len = sizeof(client_addr);
+
+        int client_socket =
+            accept(server_socket_, (struct sockaddr*)&client_addr, &client_len);
+
+        if (client_socket < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                std::this_thread::yield();
+                continue;
+            } else if (server_running_.load()) {
+                std::cerr << "NetworkManager: Accept failed: "
+                          << strerror(errno) << std::endl;
+            }
+            break;
+        }
+
+        auto opt_result = set_socket_options(client_socket);
+        if (!opt_result) {
+            close_socket(client_socket);
+            continue;
+        }
+
+        ConnectionId conn_id = next_connection_id_.fetch_add(1);
+
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.total_connections_accepted++;
+        }
+
+        try {
+            thread_pool_->enqueue([this, conn_id, client_socket]() {
+                handle_client_connection(conn_id, client_socket);
+            });
+        } catch (const std::exception& e) {
+            close_socket(client_socket);
+        }
     }
 }
 
-void NetworkManager::accept_loop(uint16_t port) {
-    // Create socket
-    listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (listen_fd_ < 0) {
-        LOG_ERROR("Failed to create socket: " + std::string(strerror(errno)));
-        running_ = false;
-        return;
-    }
+void NetworkManager::handle_client_connection(ConnectionId conn_id,
+                                              int client_socket) {
+    set_socket_timeout(client_socket, std::chrono::milliseconds(15000));
 
-    int opt = 1;
-    if (::setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) <
-        0) {
-        LOG_WARN("Failed to set SO_REUSEADDR: " + std::string(strerror(errno)));
-    }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
-
-    if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) <
-        0) {
-        LOG_ERROR("bind() failed");
-        ::close(listen_fd_);
-        listen_fd_ = -1;
-        running_ = false;
-        return;
-    }
-
-    if (::listen(listen_fd_, 16) < 0) {
-        LOG_ERROR("bind() failed on port " + std::to_string(port) + ": " +
-                  std::string(strerror(errno)));
-        close_socket(listen_fd_);
-        running_ = false;
-        return;
-    }
-
-    LOG_INFO("NetworkManager listening on port " + std::to_string(port));
-
-    while (running_) {
-        sockaddr_in client_addr{};
-        socklen_t len = sizeof(client_addr);
-        int client_fd = ::accept(
-            listen_fd_, reinterpret_cast<sockaddr*>(&client_addr), &len);
-        if (client_fd < 0) {
-            if (!running_) {
+    while (server_running_.load()) {
+        try {
+            auto receive_result = receive_message(client_socket);
+            if (!receive_result) {
                 break;
             }
 
-            if (errno == EINTR) {
-                LOG_DEBUG("accept() interrupted, retrying");
-                continue;
-            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;
-            } else {
-                LOG_ERROR("accept() failed: " + std::string(strerror(errno)));
+            auto request_result =
+                JsonSerializer::deserialize_request(receive_result.value());
+            if (!request_result) {
+                Response error_response =
+                    Response::error("Invalid request format");
+                auto serialized_response_result =
+                    JsonSerializer::serialize_response(error_response);
+                if (serialized_response_result) {
+                    auto send_result = send_message(
+                        client_socket, serialized_response_result.value());
+                    if (!send_result) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
                 continue;
             }
-        }
 
-        thread_pool_->submit([this, client_fd]() { handle_client(client_fd); });
+            // Handle request
+            std::string serialized_response;
+            if (message_handler_) {
+                try {
+                    auto response_ptr =
+                        message_handler_(*request_result.value());
+
+                    std::lock_guard<std::mutex> lock(stats_mutex_);
+                    stats_.total_requests_handled++;
+
+                    auto serialized_response_result =
+                        JsonSerializer::serialize_response(*response_ptr);
+                    if (!serialized_response_result) {
+                        break;
+                    }
+                    serialized_response = serialized_response_result.value();
+                } catch (const std::exception& e) {
+                    auto error_response =
+                        std::make_unique<Response>(Response::error(
+                            "Request handler error: " + std::string(e.what())));
+                    auto serialized_response_result =
+                        JsonSerializer::serialize_response(*error_response);
+                    if (!serialized_response_result) {
+                        break;
+                    }
+                    serialized_response = serialized_response_result.value();
+                }
+            } else {
+                auto error_response = std::make_unique<Response>(
+                    Response::error("No message handler configured"));
+                auto serialized_response_result =
+                    JsonSerializer::serialize_response(*error_response);
+                if (!serialized_response_result) {
+                    break;
+                }
+                serialized_response = serialized_response_result.value();
+            }
+
+            auto send_result = send_message(client_socket, serialized_response);
+            if (!send_result) {
+                break;
+            }
+        } catch (const std::exception& e) {
+            break;
+        }
     }
+
+    close_socket(client_socket);
+    cleanup_connection(conn_id);
 }
 
-void NetworkManager::handle_client(int client_fd) {
-    struct timeval tv;
-    tv.tv_sec = 5;
-    tv.tv_usec = 0;
-    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+Result<std::string> NetworkManager::receive_message(int socket) {
+    uint32_t message_length = 0;
+    ssize_t bytes_received =
+        recv(socket, &message_length, sizeof(message_length), MSG_WAITALL);
 
-    if (!running_) {
-        close_socket(client_fd);
-        return;
+    if (bytes_received <= 0) {
+        if (bytes_received == 0) {
+            return Result<std::string>::error("Connection closed by peer");
+        }
+
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return Result<std::string>::error("Receive timeout");
+        }
+        return Result<std::string>::error("Failed to receive message length: " +
+                                          std::string(strerror(errno)));
     }
 
-    uint32_t message_length = 0;
-    ssize_t n =
-        ::recv(client_fd, &message_length, sizeof(message_length), MSG_WAITALL);
-    if (n != sizeof(message_length)) {
-        if (n < 0) {
-            LOG_DEBUG("recv() error reading length: " +
-                      std::string(strerror(errno)));
-        }
-        close_socket(client_fd);
-        return;
+    if (bytes_received != sizeof(message_length)) {
+        return Result<std::string>::error("Incomplete message length received");
     }
 
     message_length = ntohl(message_length);
 
-    if (message_length == 0 || message_length > 1024 * 1024) {
-        LOG_DEBUG("Invalid message length: " + std::to_string(message_length));
-        close_socket(client_fd);
-        return;
+    if (message_length > 1024 * 1024) {
+        return Result<std::string>::error("Message too large: " +
+                                          std::to_string(message_length));
     }
 
-    std::vector<char> buffer(message_length);
-    n = ::recv(client_fd, buffer.data(), message_length, MSG_WAITALL);
-    if (n != static_cast<ssize_t>(message_length)) {
-        if (n < 0) {
-            LOG_DEBUG("recv() error reading message: " +
-                      std::string(strerror(errno)));
+    if (message_length == 0) {
+        return Result<std::string>::success("");
+    }
+
+    std::string message(message_length, '\0');
+    bytes_received = recv(socket, &message[0], message_length, MSG_WAITALL);
+
+    if (bytes_received <= 0) {
+        if (bytes_received == 0) {
+            return Result<std::string>::error(
+                "Connection closed while reading message");
         }
-        close_socket(client_fd);
-        return;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return Result<std::string>::error("Receive timeout");
+        }
+        return Result<std::string>::error("Failed to receive message: " +
+                                          std::string(strerror(errno)));
     }
 
-    std::string request_json(buffer.begin(), buffer.end());
-
-    std::string response_json = process_request(request_json);
-
-    if (response_json.empty()) {
-        LOG_ERROR("Empty response generated, sending error response");
-        Response error_resp = Response::error("Internal server error");
-        error_resp.responder_id = node_id_;
-        auto resp_str = JsonSerializer::serialize_response(error_resp);
-        response_json = resp_str.value_or("{}");
+    if (static_cast<uint32_t>(bytes_received) != message_length) {
+        return Result<std::string>::error("Incomplete message received");
     }
 
-    uint32_t response_length =
-        htonl(static_cast<uint32_t>(response_json.size()));
-    ssize_t sent =
-        ::send(client_fd, &response_length, sizeof(response_length), 0);
-    if (sent != sizeof(response_length)) {
-        LOG_DEBUG("send() error sending length: " +
-                  std::string(strerror(errno)));
-        close_socket(client_fd);
-        return;
-    }
-
-    sent = ::send(client_fd, response_json.data(), response_json.size(), 0);
-    if (sent < 0) {
-        LOG_DEBUG("send() error: " + std::string(strerror(errno)));
-    }
-
-    close_socket(client_fd);
+    return Result<std::string>::success(message);
 }
 
-std::string NetworkManager::process_request(const std::string& request_json) {
-    // Deserialize request
-    auto req_result = JsonSerializer::deserialize_request(request_json);
-    if (!req_result) {
-        Response error_resp = Response::error(
-            "Failed to deserialize request: " + req_result.error());
-        error_resp.responder_id = node_id_;
-        auto resp_str = JsonSerializer::serialize_response(error_resp);
-        return resp_str.value_or("");
+Result<void> NetworkManager::send_message(int socket,
+                                          const std::string& message) {
+    uint32_t message_length = htonl(static_cast<uint32_t>(message.length()));
+    ssize_t bytes_sent =
+        send(socket, &message_length, sizeof(message_length), MSG_NOSIGNAL);
+
+    if (bytes_sent <= 0) {
+        return Result<void>::error("Failed to send message length: " +
+                                   std::string(strerror(errno)));
     }
 
-    std::unique_ptr<Request>& req = req_result.value();
-    Response resp;
+    if (bytes_sent != sizeof(message_length)) {
+        return Result<void>::error("Incomplete message length sent");
+    }
 
-    if (auto* get_req = dynamic_cast<GetRequest*>(req.get())) {
-        if (storage_->contains(get_req->key)) {
-            auto val_result = storage_->get(get_req->key);
-            if (val_result) {
-                resp = Response::success(val_result.value().value,
-                                         val_result.value().version);
-            } else {
-                resp = Response::error("Failed to retrieve value");
-            }
-        } else {
-            resp = Response::not_found();
+    // Send the message
+    if (!message.empty()) {
+        bytes_sent =
+            send(socket, message.c_str(), message.length(), MSG_NOSIGNAL);
+
+        if (bytes_sent <= 0) {
+            return Result<void>::error("Failed to send message: " +
+                                       std::string(strerror(errno)));
         }
-    } else if (auto* put_req = dynamic_cast<PutRequest*>(req.get())) {
-        VersionedValue versioned_value;
-        versioned_value.value = put_req->value;
-        versioned_value.version = TimestampVersion::now(node_id_);
 
-        storage_->put(put_req->key, versioned_value);
-        resp = Response::success(put_req->value, versioned_value.version);
-    } else if (auto* del_req = dynamic_cast<DeleteRequest*>(req.get())) {
-        if (storage_->contains(del_req->key)) {
-            storage_->remove(del_req->key);
-            resp = Response::success();
-        } else {
-            resp = Response::not_found();
+        if (static_cast<size_t>(bytes_sent) != message.length()) {
+            return Result<void>::error("Incomplete message sent");
         }
-    } else {
-        resp = Response::error("Unknown request type");
     }
 
-    resp.request_id = req->request_id;
-    resp.responder_id = node_id_;
+    return Result<void>::success();
+}
 
-    // Serialize response
-    auto resp_result = JsonSerializer::serialize_response(resp);
-    if (!resp_result) {
-        LOG_ERROR("Failed to serialize response: " + resp_result.error());
-        return "";
+Result<int> NetworkManager::create_client_socket(
+    const NodeAddress& target, std::chrono::milliseconds timeout) {
+    // Create socket
+    int client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_socket < 0) {
+        return Result<int>::error("Failed to create client socket: " +
+                                  std::string(strerror(errno)));
     }
 
-    return resp_result.value();
+    // Set socket options
+    auto opt_result = set_socket_options(client_socket);
+    if (!opt_result) {
+        close_socket(client_socket);
+        return Result<int>::error("Failed to set socket options: " +
+                                  opt_result.error());
+    }
+
+    // Set connection timeout
+    auto timeout_result = set_socket_timeout(client_socket, timeout);
+    if (!timeout_result) {
+        close_socket(client_socket);
+        return Result<int>::error("Failed to set socket timeout: " +
+                                  timeout_result.error());
+    }
+
+    // Resolve hostname to IP address
+    struct addrinfo hints{}, *result;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    int status =
+        getaddrinfo(target.hostname.c_str(),
+                    std::to_string(target.port).c_str(), &hints, &result);
+    if (status != 0) {
+        close_socket(client_socket);
+        return Result<int>::error("Failed to resolve hostname " +
+                                  target.hostname + ": " +
+                                  std::string(gai_strerror(status)));
+    }
+
+    // Connect to target
+    int connect_result =
+        connect(client_socket, result->ai_addr, result->ai_addrlen);
+    int connect_errno = errno;
+    freeaddrinfo(result);
+
+    if (connect_result < 0) {
+        close_socket(client_socket);
+        return Result<int>::error("Failed to connect to " + target.to_string() +
+                                  ": " + std::string(strerror(connect_errno)));
+    }
+
+    return Result<int>::success(client_socket);
+}
+
+void NetworkManager::cleanup_connection(ConnectionId conn_id) {
+    std::lock_guard<std::mutex> lock(connections_mutex_);
+
+    auto it = active_connections_.find(conn_id);
+    if (it != active_connections_.end()) {
+        if (it->second.joinable()) {
+            it->second.detach();
+        }
+        active_connections_.erase(it);
+    }
+}
+
+Result<void> NetworkManager::set_socket_options(int socket) {
+    int opt = 1;
+    if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        return Result<void>::error("Failed to set SO_REUSEADDR: " +
+                                   std::string(strerror(errno)));
+    }
+
+    return Result<void>::success();
+}
+
+Result<void> NetworkManager::set_socket_timeout(
+    int socket, std::chrono::milliseconds timeout) {
+    struct timeval tv;
+    tv.tv_sec = timeout.count() / 1000;
+    tv.tv_usec = (timeout.count() % 1000) * 1000;
+
+    if (setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+        return Result<void>::error("Failed to set receive timeout: " +
+                                   std::string(strerror(errno)));
+    }
+
+    if (setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        return Result<void>::error("Failed to set send timeout: " +
+                                   std::string(strerror(errno)));
+    }
+
+    return Result<void>::success();
+}
+
+void NetworkManager::close_socket(int socket) {
+    if (socket < 0) {
+        return;
+    }
+
+    shutdown(socket, SHUT_RDWR);
+    close(socket);
 }
 
 }  // namespace trelliskv

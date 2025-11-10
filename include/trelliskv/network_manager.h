@@ -40,9 +40,6 @@ class NetworkManager {
         const NodeAddress& target, const Request& request,
         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
 
-    void send_message_async(const NodeAddress& target,
-                            const std::string& message);
-
     void close_connection(ConnectionId conn_id);
     void close_all_connections();
     size_t get_active_connections_count() const;
