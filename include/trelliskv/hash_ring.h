@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -41,7 +40,6 @@ class HashRing {
     std::unordered_map<NodeId, NodeInfo> nodes_;
     size_t virtual_nodes_per_physical_;
     mutable std::mutex mutex_;
-    std::hash<std::string> hasher_;
 };
 
 }  // namespace trelliskv

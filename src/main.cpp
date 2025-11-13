@@ -28,15 +28,17 @@ void print_usage(const char* program_name) {
 int main(int argc, char* argv[]) {
     LOG_INFO("TrellisKV - Distributed Key-Value Store");
 
-    trelliskv::NodeConfig config;
+    std::string hostname = "localhost";
+    uint16_t port = 5000;
+    std::string node_id;
 
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
-            config.hostname = argv[++i];
+            hostname = argv[++i];
         } else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
-            config.port = static_cast<uint16_t>(std::stoi(argv[++i]));
+            port = static_cast<uint16_t>(std::stoi(argv[++i]));
         } else if (std::strcmp(argv[i], "--node-id") == 0 && i + 1 < argc) {
-            config.node_id = argv[++i];
+            node_id = argv[++i];
         } else if (std::strcmp(argv[i], "--help") == 0) {
             print_usage(argv[0]);
             return 0;
@@ -47,22 +49,23 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (config.node_id.empty()) {
-        config.node_id = config.hostname + ":" + std::to_string(config.port);
+    if (node_id.empty()) {
+        node_id = hostname + ":" + std::to_string(port);
     }
 
     std::signal(SIGINT, handle_sigint);
 
-    trelliskv::TrellisNode node(config);
+    auto config = trelliskv::TrellisNode::create_default_config(hostname, port);
+    trelliskv::TrellisNode node(node_id, config);
 
-    if (!node.start()) {
-        LOG_ERROR("Failed to start TrellisNode");
+    auto start_result = node.start();
+    if (!start_result) {
+        LOG_ERROR("Failed to start TrellisNode: " + start_result.error());
         return 1;
     }
 
-    LOG_INFO("Server started on " + config.hostname + ":" +
-             std::to_string(config.port));
-    LOG_INFO("Node ID: " + config.node_id);
+    LOG_INFO("Server started on " + hostname + ":" + std::to_string(port));
+    LOG_INFO("Node ID: " + node_id);
     LOG_INFO("Ready to handle GET/PUT/DELETE requests");
     LOG_INFO("Press Ctrl+C to stop");
 

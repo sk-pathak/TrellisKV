@@ -57,10 +57,7 @@ NetworkManager::NetworkManager(uint16_t port)
     stats_.start_time = std::chrono::system_clock::now();
 }
 
-NetworkManager::~NetworkManager() {
-    stop_server();
-    close_all_connections();
-}
+NetworkManager::~NetworkManager() { stop_server(); }
 
 Result<void> NetworkManager::start_server(uint16_t port) {
     if (server_running_.load()) {
