@@ -18,6 +18,7 @@ class NetworkManager;
 class StorageEngine;
 class HashRing;
 class ConnectionPool;
+class RequestRouter;
 
 class TrellisNode {
    public:
@@ -56,6 +57,7 @@ class TrellisNode {
     std::unique_ptr<StorageEngine> storage_engine_;
     std::unique_ptr<HashRing> hash_ring_;
     std::unique_ptr<ConnectionPool> connection_pool_;
+    std::unique_ptr<RequestRouter> request_router_;
 
     mutable std::mutex stats_mutex_;
 };

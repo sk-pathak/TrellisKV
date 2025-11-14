@@ -10,6 +10,7 @@
 #include "trelliskv/network_manager.h"
 #include "trelliskv/node_config.h"
 #include "trelliskv/node_info.h"
+#include "trelliskv/request_router.h"
 #include "trelliskv/storage_engine.h"
 
 namespace trelliskv {
@@ -21,18 +22,31 @@ TrellisNode::TrellisNode(const NodeId& node_id, const NodeConfig& config)
     hash_ring_ = std::make_unique<HashRing>();
     connection_pool_ = std::make_unique<ConnectionPool>(10);
 
+    request_router_ = std::make_unique<RequestRouter>(
+        node_id_, hash_ring_.get(), connection_pool_.get(),
+        config_.replication_factor);
+
     network_manager_->set_message_handler(
         [this](const Request& request) -> std::unique_ptr<Response> {
             return handle_request(request);
         });
 }
 
-TrellisNode::~TrellisNode() { stop(); }
+TrellisNode::~TrellisNode() {
+    if (network_manager_) {
+        network_manager_->stop_server();
+    }
+
+    if (connection_pool_) {
+        connection_pool_->close_all_connections();
+    }
+}
 
 NodeConfig TrellisNode::create_default_config(const std::string& hostname,
                                               uint16_t port) {
     NodeConfig config;
     config.address = NodeAddress(hostname, port);
+    config.replication_factor = 3;
     config.virtual_nodes_per_physical = 50;
     return config;
 }
@@ -124,68 +138,124 @@ std::unique_ptr<Response> TrellisNode::handle_request(const Request& request) {
 }
 
 Response TrellisNode::handle_get_request(const GetRequest& request) {
-    auto result = storage_engine_->get(request.key);
+    const bool is_local = request_router_->is_key_local(request.key);
 
-    Response response;
-    response.request_id = request.request_id;
-    response.responder_id = node_id_;
-
-    if (result.is_success()) {
-        const auto& versioned_value = result.value();
-        response =
-            Response::success(versioned_value.value, versioned_value.version);
-    } else {
-        if (result.error().find("not found") != std::string::npos) {
-            response = Response::not_found();
+    if (!is_local) {
+        auto forward_result = request_router_->forward_get_request(request);
+        if (forward_result) {
+            return *forward_result.value();
         } else {
-            response =
-                Response::error("Failed to get value: " + result.error());
+            Response response = Response::error("Failed to forward request: " +
+                                                forward_result.error());
+            response.request_id = request.request_id;
+            response.responder_id = node_id_;
+            return response;
         }
     }
 
-    response.request_id = request.request_id;
-    response.responder_id = node_id_;
-    return response;
+    auto result = storage_engine_->get(request.key);
+
+    if (result) {
+        const auto& versioned_value = result.value();
+        Response response =
+            Response::success(versioned_value.value, versioned_value.version);
+        response.request_id = request.request_id;
+        response.responder_id = node_id_;
+        return response;
+    } else {
+        if (result.error().find("not found") != std::string::npos) {
+            Response response = Response::not_found();
+            response.request_id = request.request_id;
+            response.responder_id = node_id_;
+            return response;
+        } else {
+            Response response =
+                Response::error("Failed to read value: " + result.error());
+            response.request_id = request.request_id;
+            response.responder_id = node_id_;
+            return response;
+        }
+    }
 }
 
 Response TrellisNode::handle_put_request(const PutRequest& request) {
-    VersionedValue versioned_value;
-    versioned_value.value = request.value;
-    versioned_value.version = TimestampVersion::now(node_id_);
+    const bool is_local = request_router_->is_key_local(request.key);
 
-    auto result = storage_engine_->put(request.key, versioned_value);
-
-    Response response;
-    response.request_id = request.request_id;
-    response.responder_id = node_id_;
-
-    if (result) {
-        response = Response::success("", versioned_value.version);
-    } else {
-        response = Response::error("Failed to put value: " + result.error());
+    if (!is_local) {
+        auto forward_result = request_router_->forward_put_request(request);
+        if (forward_result) {
+            return *forward_result.value();
+        } else {
+            Response response = Response::error("Failed to forward request: " +
+                                                forward_result.error());
+            response.request_id = request.request_id;
+            response.responder_id = node_id_;
+            return response;
+        }
     }
 
-    response.request_id = request.request_id;
-    response.responder_id = node_id_;
-    return response;
+    TimestampVersion new_version = TimestampVersion::now(node_id_);
+    VersionedValue versioned_value(request.value, new_version, node_id_);
+
+    if (request.expected_version.has_value()) {
+        auto current = storage_engine_->get(request.key);
+        if (current) {
+            if (!current.value().version.equals(
+                    request.expected_version.value())) {
+                Response response = Response::conflict();
+                response.request_id = request.request_id;
+                response.responder_id = node_id_;
+                response.error_message = "Version mismatch";
+                return response;
+            }
+        }
+    }
+
+    auto result = storage_engine_->put(request.key, versioned_value);
+    if (result) {
+        Response response = Response::success("", new_version);
+        response.request_id = request.request_id;
+        response.responder_id = node_id_;
+        return response;
+    } else {
+        Response response =
+            Response::error("Failed to write value: " + result.error());
+        response.request_id = request.request_id;
+        response.responder_id = node_id_;
+        return response;
+    }
 }
 
 Response TrellisNode::handle_delete_request(const DeleteRequest& request) {
-    auto result = storage_engine_->remove(request.key);
+    const bool is_local = request_router_->is_key_local(request.key);
 
-    Response response;
-    response.request_id = request.request_id;
-    response.responder_id = node_id_;
-
-    if (result) {
-        response = result.value() ? Response::success() : Response::not_found();
-    } else {
-        response = Response::error("Failed to delete value: " + result.error());
+    if (!is_local) {
+        auto forward_result = request_router_->forward_delete_request(request);
+        if (forward_result) {
+            return *forward_result.value();
+        } else {
+            Response response = Response::error("Failed to forward request: " +
+                                                forward_result.error());
+            response.request_id = request.request_id;
+            response.responder_id = node_id_;
+            return response;
+        }
     }
 
-    response.request_id = request.request_id;
-    response.responder_id = node_id_;
-    return response;
+    auto result = storage_engine_->remove(request.key);
+    if (result) {
+        Response response =
+            result.value() ? Response::success() : Response::not_found();
+        response.request_id = request.request_id;
+        response.responder_id = node_id_;
+        return response;
+    } else {
+        Response response =
+            Response::error("Failed to delete value: " + result.error());
+        response.request_id = request.request_id;
+        response.responder_id = node_id_;
+        return response;
+    }
 }
 
 std::string TrellisNode::generate_request_id() const {
