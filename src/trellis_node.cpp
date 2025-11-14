@@ -3,6 +3,7 @@
 #include <random>
 #include <sstream>
 
+#include "trelliskv/connection_pool.h"
 #include "trelliskv/hash_ring.h"
 #include "trelliskv/logger.h"
 #include "trelliskv/messages.h"
@@ -18,6 +19,7 @@ TrellisNode::TrellisNode(const NodeId& node_id, const NodeConfig& config)
     network_manager_ = std::make_unique<NetworkManager>(config_.address.port);
     storage_engine_ = std::make_unique<StorageEngine>();
     hash_ring_ = std::make_unique<HashRing>();
+    connection_pool_ = std::make_unique<ConnectionPool>(10);
 
     network_manager_->set_message_handler(
         [this](const Request& request) -> std::unique_ptr<Response> {
@@ -49,8 +51,8 @@ Result<void> TrellisNode::start() {
     NodeInfo self_info;
     self_info.id = node_id_;
     self_info.address = config_.address;
-
     hash_ring_->add_node(self_info);
+
     running_.store(true);
     start_time_ = std::chrono::steady_clock::now();
     return Result<void>::success();
@@ -66,6 +68,10 @@ void TrellisNode::stop() {
     if (network_manager_) {
         network_manager_->stop_server();
     }
+
+    if (connection_pool_) {
+        connection_pool_->close_all_connections();
+    }
 }
 
 bool TrellisNode::is_running() const { return running_.load(); }
@@ -79,6 +85,20 @@ NodeInfo TrellisNode::get_node_info() const {
     info.id = node_id_;
     info.address = config_.address;
     return info;
+}
+
+Result<void> TrellisNode::join_cluster() { return Result<void>::success(); }
+
+void TrellisNode::add_node(const NodeInfo& node) {
+    if (hash_ring_) {
+        hash_ring_->add_node(node);
+    }
+}
+
+void TrellisNode::remove_node(const NodeId& node_id) {
+    if (hash_ring_) {
+        hash_ring_->remove_node(node_id);
+    }
 }
 
 std::unique_ptr<Response> TrellisNode::handle_request(const Request& request) {
@@ -115,7 +135,6 @@ Response TrellisNode::handle_get_request(const GetRequest& request) {
         response =
             Response::success(versioned_value.value, versioned_value.version);
     } else {
-        // Check if it's a not found error
         if (result.error().find("not found") != std::string::npos) {
             response = Response::not_found();
         } else {

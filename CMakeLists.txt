@@ -39,7 +39,7 @@ add_executable(trellis ${SOURCES} ${HEADERS})
 target_link_libraries(trellis Threads::Threads nlohmann_json::nlohmann_json)
 
 # Create CLI client executable
-add_executable(trellis-cli src/cli/main.cpp src/tcp_client.cpp src/json_serializer.cpp src/messages.cpp)
+add_executable(trellis-cli src/cli/main.cpp src/tcp_client.cpp src/json_serializer.cpp src/messages.cpp src/connection_pool.cpp)
 target_link_libraries(trellis-cli Threads::Threads nlohmann_json::nlohmann_json)
 
 # Installation

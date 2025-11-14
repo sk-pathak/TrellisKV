@@ -1,17 +1,23 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
+#include <mutex>
+#include <string>
 
-#include "trelliskv/messages.h"
-#include "trelliskv/node_config.h"
-#include "trelliskv/result.h"
+#include "messages.h"
+#include "node_config.h"
+#include "node_info.h"
+#include "result.h"
+#include "types.h"
 
 namespace trelliskv {
 
-class HashRing;
 class NetworkManager;
 class StorageEngine;
+class HashRing;
+class ConnectionPool;
 
 class TrellisNode {
    public:
@@ -28,6 +34,11 @@ class TrellisNode {
     const NodeConfig& get_config() const;
     const NodeId& get_node_id() const;
     NodeInfo get_node_info() const;
+
+    Result<void> join_cluster();
+    void add_node(const NodeInfo& node);
+    void remove_node(const NodeId& node_id);
+
     std::unique_ptr<Response> handle_request(const Request& request);
 
    private:
@@ -44,6 +55,9 @@ class TrellisNode {
     std::unique_ptr<NetworkManager> network_manager_;
     std::unique_ptr<StorageEngine> storage_engine_;
     std::unique_ptr<HashRing> hash_ring_;
+    std::unique_ptr<ConnectionPool> connection_pool_;
+
+    mutable std::mutex stats_mutex_;
 };
 
 }  // namespace trelliskv
