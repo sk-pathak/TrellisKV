@@ -10,8 +10,7 @@ namespace trelliskv {
 
 struct NodeConfig {
     NodeAddress address;
-
-    std::string node_id;
+    std::vector<NodeAddress> seed_nodes;
     size_t replication_factor = 3;
     size_t virtual_nodes_per_physical = 50;
 

@@ -101,7 +101,27 @@ NodeInfo TrellisNode::get_node_info() const {
     return info;
 }
 
-Result<void> TrellisNode::join_cluster() { return Result<void>::success(); }
+Result<void> TrellisNode::join_cluster() {
+    if (config_.seed_nodes.empty()) {
+        return Result<void>::success();
+    }
+
+    auto discovery_result = discover_cluster_from_seeds();
+    if (!discovery_result) {
+        return Result<void>::error("Failed to discover cluster: " +
+                                   discovery_result.error());
+    }
+
+    auto bootstrap_result = bootstrap_from_cluster();
+    if (!bootstrap_result) {
+        return Result<void>::error("Failed to bootstrap from cluster: " +
+                                   bootstrap_result.error());
+    }
+
+    NodeInfo local_info = get_node_info();
+
+    return Result<void>::success();
+}
 
 void TrellisNode::add_node(const NodeInfo& node) {
     if (hash_ring_) {
@@ -269,4 +289,309 @@ std::string TrellisNode::generate_request_id() const {
     return ss.str();
 }
 
-}  // namespace trelliskv
+Result<void> TrellisNode::discover_cluster_from_seeds() {
+    std::vector<ClusterState> discovered_states;
+    size_t successful_contacts = 0;
+
+    // Contact each seed node to discover cluster state
+    for (const auto& seed_address : config_.seed_nodes) {
+        auto cluster_state_result = contact_seed_node(seed_address);
+        if (cluster_state_result) {
+            discovered_states.push_back(cluster_state_result.value());
+            successful_contacts++;
+        }
+    }
+
+    if (successful_contacts == 0) {
+        return Result<void>::error(
+            "Failed to contact any seed nodes for cluster discovery");
+    }
+
+    for (const auto& state : discovered_states) {
+        merge_discovered_cluster_state(state);
+    }
+
+    return Result<void>::success();
+}
+
+Result<ClusterState> TrellisNode::contact_seed_node(
+    const NodeAddress& seed_address) {
+    try {
+        // Create a cluster discovery request
+        ClusterDiscoveryRequest discovery_request;
+        discovery_request.requesting_node_id = node_id_;
+        discovery_request.requesting_node_address = config_.address;
+        discovery_request.request_id = generate_request_id();
+
+        // Send discovery request to seed node
+        auto response_result = connection_pool_->send_request(
+            seed_address, discovery_request, std::chrono::milliseconds(5000));
+
+        if (!response_result) {
+            return Result<ClusterState>::error(
+                "Failed to send discovery request: " + response_result.error());
+        }
+
+        const auto& response = response_result.value();
+        if (response->status != ResponseStatus::OK) {
+            return Result<ClusterState>::error("Discovery request failed: " +
+                                               response->error_message);
+        }
+
+        // Parse cluster state from response
+        if (const auto* discovery_response =
+                dynamic_cast<const ClusterDiscoveryResponse*>(response.get())) {
+            if (discovery_response->cluster_state) {
+                return Result<ClusterState>::success(
+                    *discovery_response->cluster_state);
+            } else {
+                return Result<ClusterState>::error(
+                    "Null cluster state in discovery response");
+            }
+        } else {
+            return Result<ClusterState>::error(
+                "Invalid response type for cluster discovery");
+        }
+
+    } catch (const std::exception& e) {
+        return Result<ClusterState>::error(
+            "Exception during seed node contact: " + std::string(e.what()));
+    }
+}
+
+void TrellisNode::merge_discovered_cluster_state(
+    const ClusterState& discovered_state) {
+    for (const auto& [node_id, node_info] : discovered_state.nodes) {
+        if (node_id == node_id_) {
+            continue;
+        }
+
+        if (node_info.is_active()) {
+            hash_ring_->add_node(node_info);
+        }
+    }
+}
+
+Result<void> TrellisNode::bootstrap_from_cluster() {
+    // Small delay to ensure seed nodes are fully ready
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    // Get list of active nodes for bootstrap
+    auto active_nodes = hash_ring_->get_all_nodes();
+    if (active_nodes.empty()) {
+        return Result<void>::success();
+    }
+
+    size_t successful_syncs = 0;
+    const size_t min_successful_syncs =
+        std::min(static_cast<size_t>(2), active_nodes.size());
+    const size_t max_retry_attempts = 3;
+
+    // Contact multiple nodes to get a complete view of the cluster
+    for (const auto& node_id : active_nodes) {
+        if (node_id == node_id_) {
+            continue;  // Skip ourselves
+        }
+
+        bool node_success = false;
+        for (size_t attempt = 0; attempt < max_retry_attempts && !node_success;
+             ++attempt) {
+            try {
+                if (attempt > 0) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(1000 * attempt));
+                }
+
+                // Create bootstrap request
+                BootstrapRequest bootstrap_request;
+                bootstrap_request.requesting_node_id = node_id_;
+                bootstrap_request.requesting_node_address = config_.address;
+                bootstrap_request.request_id = generate_request_id();
+
+                // Get node address
+                auto node_info = hash_ring_->get_node_info(node_id);
+                if (!node_info) {
+                    break;  // No point retrying if we don't have the address
+                }
+
+                // Send bootstrap request with shorter timeout for retries
+                auto timeout = (attempt == 0) ? std::chrono::milliseconds(10000)
+                                              : std::chrono::milliseconds(5000);
+                auto response_result = connection_pool_->send_request(
+                    node_info->address, bootstrap_request, timeout);
+
+                if (response_result) {
+                    const auto& response = response_result.value();
+                    if (response->status == ResponseStatus::OK) {
+                        successful_syncs++;
+                        node_success = true;
+
+                        // Process bootstrap response
+                        if (const auto* bootstrap_response =
+                                dynamic_cast<const BootstrapResponse*>(
+                                    response.get())) {
+                            // Update our cluster state with the bootstrap
+                            // information
+                            if (bootstrap_response->cluster_state) {
+                                merge_discovered_cluster_state(
+                                    *bootstrap_response->cluster_state);
+
+                                // Add recommended peers to our known nodes
+                                for (const auto& peer_id :
+                                     bootstrap_response->recommended_peers) {
+                                    auto peer_info =
+                                        bootstrap_response->cluster_state->nodes
+                                            .find(peer_id);
+                                    if (peer_info !=
+                                        bootstrap_response->cluster_state->nodes
+                                            .end()) {
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+            } catch (const std::exception& e) {
+            }
+        }
+
+        if (successful_syncs >= min_successful_syncs) {
+            break;
+        }
+    }
+
+    if (successful_syncs == 0) {
+        return Result<void>::error(
+            "Failed to bootstrap from any cluster nodes after retries");
+    }
+
+    return Result<void>::success();
+}
+
+std::unique_ptr<Response> TrellisNode::handle_cluster_discovery_request(
+    const ClusterDiscoveryRequest& request) {
+    try {
+        if (request.requesting_node_id.empty()) {
+            return std::make_unique<Response>(Response::error(
+                "Invalid cluster discovery request: missing node ID"));
+        }
+
+        if (request.requesting_node_address.hostname.empty() ||
+            request.requesting_node_address.port == 0) {
+            return std::make_unique<Response>(Response::error(
+                "Invalid cluster discovery request: invalid node address"));
+        }
+
+        // Build cluster state from hash ring
+        ClusterState cluster_state;
+        auto all_nodes = hash_ring_->get_all_nodes();
+        for (const auto& node_id : all_nodes) {
+            auto node_info_opt = hash_ring_->get_node_info(node_id);
+            if (node_info_opt) {
+                cluster_state.nodes[node_id] = *node_info_opt;
+            }
+        }
+
+        // Add the requesting node to our hash ring if not already present
+        auto requesting_node_it =
+            cluster_state.nodes.find(request.requesting_node_id);
+        if (requesting_node_it == cluster_state.nodes.end()) {
+            NodeInfo requesting_node(request.requesting_node_id,
+                                     request.requesting_node_address,
+                                     NodeState::ACTIVE);
+            cluster_state.nodes[request.requesting_node_id] = requesting_node;
+            hash_ring_->add_node(requesting_node);
+        } else {
+            requesting_node_it->second.address =
+                request.requesting_node_address;
+            requesting_node_it->second.update_last_seen();
+        }
+
+        auto cluster_state_ptr = std::make_shared<ClusterState>(cluster_state);
+        ClusterDiscoveryResponse discovery_response(cluster_state_ptr, node_id_,
+                                                    cluster_state.nodes.size());
+        discovery_response.status = ResponseStatus::OK;
+        discovery_response.request_id = request.request_id;
+        discovery_response.responder_id = node_id_;
+
+        return std::make_unique<ClusterDiscoveryResponse>(
+            std::move(discovery_response));
+
+    } catch (const std::exception& e) {
+        return std::make_unique<Response>(
+            Response::error("Failed to process cluster discovery request: " +
+                            std::string(e.what())));
+    }
+}
+
+std::unique_ptr<Response> TrellisNode::handle_bootstrap_request(
+    const BootstrapRequest& request) {
+    try {
+        if (request.requesting_node_id.empty()) {
+            return std::make_unique<Response>(
+                Response::error("Invalid bootstrap request: missing node ID"));
+        }
+
+        if (request.requesting_node_address.hostname.empty() ||
+            request.requesting_node_address.port == 0) {
+            return std::make_unique<Response>(Response::error(
+                "Invalid bootstrap request: invalid node address"));
+        }
+
+        // Build cluster state from hash ring
+        ClusterState cluster_state;
+        auto all_nodes = hash_ring_->get_all_nodes();
+        for (const auto& node_id : all_nodes) {
+            auto node_info_opt = hash_ring_->get_node_info(node_id);
+            if (node_info_opt) {
+                cluster_state.nodes[node_id] = *node_info_opt;
+            }
+        }
+
+        // Add the requesting node to our hash ring if not already present
+        auto requesting_node_it =
+            cluster_state.nodes.find(request.requesting_node_id);
+        if (requesting_node_it == cluster_state.nodes.end()) {
+            NodeInfo requesting_node(request.requesting_node_id,
+                                     request.requesting_node_address,
+                                     NodeState::ACTIVE);
+            cluster_state.nodes[request.requesting_node_id] = requesting_node;
+            hash_ring_->add_node(requesting_node);
+        } else {
+            requesting_node_it->second.address =
+                request.requesting_node_address;
+            requesting_node_it->second.state = NodeState::ACTIVE;
+            requesting_node_it->second.update_last_seen();
+        }
+
+        auto cluster_state_ptr = std::make_shared<ClusterState>(cluster_state);
+        BootstrapResponse bootstrap_response(cluster_state_ptr, node_id_);
+        bootstrap_response.status = ResponseStatus::OK;
+        bootstrap_response.request_id = request.request_id;
+        bootstrap_response.responder_id = node_id_;
+
+        // Get active nodes from hash ring for peer recommendations
+        auto active_nodes = hash_ring_->get_all_nodes();
+        size_t max_recommended_peers =
+            std::min(static_cast<size_t>(5), active_nodes.size());
+        size_t added_peers = 0;
+
+        for (const auto& node_id : active_nodes) {
+            if (node_id != node_id_ && node_id != request.requesting_node_id &&
+                added_peers < max_recommended_peers) {
+                bootstrap_response.recommended_peers.push_back(node_id);
+                added_peers++;
+            }
+        }
+
+        return std::make_unique<BootstrapResponse>(
+            std::move(bootstrap_response));
+
+    } catch (const std::exception& e) {
+        return std::make_unique<Response>(Response::error(
+            "Failed to process bootstrap request: " + std::string(e.what())));
+    }
+}
+
+};  // namespace trelliskv

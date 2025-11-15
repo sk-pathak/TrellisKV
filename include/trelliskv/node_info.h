@@ -28,11 +28,22 @@ using NodeAddressHash = std::hash<trelliskv::NodeAddress>;
 struct NodeInfo {
     NodeId id;
     NodeAddress address;
+    NodeState state;
+    Timestamp last_seen;
 
     NodeInfo() = default;
+    NodeInfo(const NodeId& node_id, const NodeAddress& addr,
+             NodeState s = NodeState::ACTIVE)
+        : id(node_id),
+          address(addr),
+          state(s),
+          last_seen(std::chrono::system_clock::now()) {}
 
-    NodeInfo(const NodeId& id, const NodeAddress& addr)
-        : id(id), address(addr) {}
+    void update_last_seen() { last_seen = std::chrono::system_clock::now(); }
+
+    bool is_active() const { return state == NodeState::ACTIVE; }
+
+    bool is_failed() const { return state == NodeState::FAILED; }
 };
 
 }  // namespace trelliskv

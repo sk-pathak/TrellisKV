@@ -1,12 +1,17 @@
 #pragma once
 
+#include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "nlohmann/json.hpp"
+#include "node_info.h"
 #include "types.h"
 
 namespace trelliskv {
+
+struct ClusterState;
 
 struct Request {
     std::string request_id;
@@ -26,7 +31,7 @@ struct GetRequest : public Request {
     std::optional<TimestampVersion> client_version;
 
     GetRequest() = default;
-    explicit GetRequest(const std::string& k) : key(k) {}
+    GetRequest(const std::string& k) : key(k) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;
@@ -50,7 +55,7 @@ struct DeleteRequest : public Request {
     std::optional<TimestampVersion> expected_version;
 
     DeleteRequest() = default;
-    explicit DeleteRequest(const std::string& k) : key(k) {}
+    DeleteRequest(const std::string& k) : key(k) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;
@@ -105,4 +110,59 @@ struct Response {
     virtual void to_json(nlohmann::json& json) const;
     virtual void from_json(const nlohmann::json& json);
 };
+
+struct ClusterDiscoveryRequest : public Request {
+    NodeId requesting_node_id;
+    NodeAddress requesting_node_address;
+
+    ClusterDiscoveryRequest() = default;
+    ClusterDiscoveryRequest(const NodeId& node_id, const NodeAddress& address)
+        : requesting_node_id(node_id), requesting_node_address(address) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+struct ClusterDiscoveryResponse : public Response {
+    std::shared_ptr<ClusterState> cluster_state;
+    NodeId responding_node_id;
+    size_t cluster_size;
+
+    ClusterDiscoveryResponse() = default;
+    ClusterDiscoveryResponse(std::shared_ptr<ClusterState> state,
+                             const NodeId& responder, size_t size)
+        : cluster_state(state),
+          responding_node_id(responder),
+          cluster_size(size) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+struct BootstrapRequest : public Request {
+    NodeId requesting_node_id;
+    NodeAddress requesting_node_address;
+
+    BootstrapRequest() = default;
+    BootstrapRequest(const NodeId& node_id, const NodeAddress& address)
+        : requesting_node_id(node_id), requesting_node_address(address) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+struct BootstrapResponse : public Response {
+    std::shared_ptr<ClusterState> cluster_state;
+    NodeId responding_node_id;
+    std::vector<NodeId> recommended_peers;
+
+    BootstrapResponse() = default;
+    BootstrapResponse(std::shared_ptr<ClusterState> state,
+                      const NodeId& responder)
+        : cluster_state(state), responding_node_id(responder) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
 }  // namespace trelliskv

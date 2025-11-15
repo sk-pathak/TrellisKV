@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 
+#include "cluster_state.h"
 #include "messages.h"
 #include "node_config.h"
 #include "node_info.h"
@@ -22,6 +23,13 @@ class RequestRouter;
 
 class TrellisNode {
    public:
+    struct ClusterStats {
+        size_t total_nodes = 0;
+        size_t active_connections = 0;
+        size_t total_requests_handled = 0;
+        size_t local_keys = 0;
+    };
+
     explicit TrellisNode(const NodeId& node_id, const NodeConfig& config);
     ~TrellisNode();
 
@@ -40,6 +48,7 @@ class TrellisNode {
     void add_node(const NodeInfo& node);
     void remove_node(const NodeId& node_id);
 
+    ClusterStats get_stats() const;
     std::unique_ptr<Response> handle_request(const Request& request);
 
    private:
@@ -47,6 +56,14 @@ class TrellisNode {
     Response handle_put_request(const PutRequest& request);
     Response handle_delete_request(const DeleteRequest& request);
     std::string generate_request_id() const;
+    Result<void> discover_cluster_from_seeds();
+    Result<ClusterState> contact_seed_node(const NodeAddress& seed_address);
+    void merge_discovered_cluster_state(const ClusterState& discovered_state);
+    Result<void> bootstrap_from_cluster();
+    std::unique_ptr<Response> handle_cluster_discovery_request(
+        const ClusterDiscoveryRequest& request);
+    std::unique_ptr<Response> handle_bootstrap_request(
+        const BootstrapRequest& request);
 
     NodeId node_id_;
     NodeConfig config_;
@@ -60,6 +77,7 @@ class TrellisNode {
     std::unique_ptr<RequestRouter> request_router_;
 
     mutable std::mutex stats_mutex_;
+    ClusterStats stats_;
 };
 
 }  // namespace trelliskv

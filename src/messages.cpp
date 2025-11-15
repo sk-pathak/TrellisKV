@@ -2,21 +2,22 @@
 
 #include <nlohmann/json.hpp>
 
+#include "trelliskv/cluster_state.h"
 #include "trelliskv/json_serializer.h"
 
 namespace trelliskv {
 
-void Request::to_json(nlohmann::json& j) const {
-    j["request_id"] = request_id;
-    j["sender_id"] = sender_id;
+void Request::to_json(nlohmann::json& json) const {
+    json["request_id"] = request_id;
+    json["sender_id"] = sender_id;
 }
 
-void Request::from_json(const nlohmann::json& j) {
-    if (j.contains("request_id")) {
-        request_id = j["request_id"];
+void Request::from_json(const nlohmann::json& json) {
+    if (json.contains("request_id")) {
+        request_id = json["request_id"];
     }
-    if (j.contains("sender_id")) {
-        sender_id = j["sender_id"];
+    if (json.contains("sender_id")) {
+        sender_id = json["sender_id"];
     }
 }
 
@@ -44,6 +45,7 @@ void GetRequest::from_json(const nlohmann::json& json) {
     }
 }
 
+// PutRequest implementation
 void PutRequest::to_json(nlohmann::json& json) const {
     Request::to_json(json);
     json["type"] = "PUT";
@@ -100,6 +102,51 @@ void DeleteRequest::from_json(const nlohmann::json& json) {
     }
 }
 
+void ClusterDiscoveryRequest::to_json(nlohmann::json& json) const {
+    Request::to_json(json);
+    json["type"] = "CLUSTER_DISCOVERY";
+    json["requesting_node_id"] = requesting_node_id;
+    json["requesting_node_address"] =
+        JsonSerializer::serialize_node_address(requesting_node_address);
+}
+
+void ClusterDiscoveryRequest::from_json(const nlohmann::json& json) {
+    Request::from_json(json);
+    if (json.contains("requesting_node_id")) {
+        requesting_node_id = json["requesting_node_id"];
+    }
+    if (json.contains("requesting_node_address")) {
+        auto result = JsonSerializer::deserialize_node_address(
+            json["requesting_node_address"]);
+        if (result) {
+            requesting_node_address = result.value();
+        }
+    }
+}
+
+// BootstrapRequest implementation
+void BootstrapRequest::to_json(nlohmann::json& json) const {
+    Request::to_json(json);
+    json["type"] = "BOOTSTRAP";
+    json["requesting_node_id"] = requesting_node_id;
+    json["requesting_node_address"] =
+        JsonSerializer::serialize_node_address(requesting_node_address);
+}
+
+void BootstrapRequest::from_json(const nlohmann::json& json) {
+    Request::from_json(json);
+    if (json.contains("requesting_node_id")) {
+        requesting_node_id = json["requesting_node_id"];
+    }
+    if (json.contains("requesting_node_address")) {
+        auto result = JsonSerializer::deserialize_node_address(
+            json["requesting_node_address"]);
+        if (result) {
+            requesting_node_address = result.value();
+        }
+    }
+}
+
 void Response::to_json(nlohmann::json& json) const {
     json["request_id"] = request_id;
     json["status"] = JsonSerializer::response_status_to_string(status);
@@ -142,6 +189,63 @@ void Response::from_json(const nlohmann::json& json) {
     }
     if (json.contains("error_message")) {
         error_message = json["error_message"];
+    }
+}
+
+void ClusterDiscoveryResponse::to_json(nlohmann::json& json) const {
+    Response::to_json(json);
+    json["type"] = "CLUSTER_DISCOVERY_RESPONSE";
+    json["responding_node_id"] = responding_node_id;
+    json["cluster_size"] = cluster_size;
+    if (cluster_state) {
+        json["cluster_state"] =
+            JsonSerializer::serialize_cluster_state(*cluster_state);
+    }
+}
+
+void ClusterDiscoveryResponse::from_json(const nlohmann::json& json) {
+    Response::from_json(json);
+    if (json.contains("responding_node_id")) {
+        responding_node_id = json["responding_node_id"];
+    }
+    if (json.contains("cluster_size")) {
+        cluster_size = json["cluster_size"];
+    }
+    if (json.contains("cluster_state")) {
+        auto result =
+            JsonSerializer::deserialize_cluster_state(json["cluster_state"]);
+        if (result) {
+            cluster_state = std::make_shared<ClusterState>(result.value());
+        }
+    }
+}
+
+void BootstrapResponse::to_json(nlohmann::json& json) const {
+    Response::to_json(json);
+    json["type"] = "BOOTSTRAP_RESPONSE";
+    json["responding_node_id"] = responding_node_id;
+    if (cluster_state) {
+        json["cluster_state"] =
+            JsonSerializer::serialize_cluster_state(*cluster_state);
+    }
+    json["recommended_peers"] = recommended_peers;
+}
+
+void BootstrapResponse::from_json(const nlohmann::json& json) {
+    Response::from_json(json);
+    if (json.contains("responding_node_id")) {
+        responding_node_id = json["responding_node_id"];
+    }
+    if (json.contains("cluster_state")) {
+        auto result =
+            JsonSerializer::deserialize_cluster_state(json["cluster_state"]);
+        if (result) {
+            cluster_state = std::make_shared<ClusterState>(result.value());
+        }
+    }
+    if (json.contains("recommended_peers")) {
+        recommended_peers =
+            json["recommended_peers"].get<std::vector<NodeId>>();
     }
 }
 
