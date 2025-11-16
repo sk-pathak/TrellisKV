@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <memory>
 #include <string>
 
 #include "node_info.h"
@@ -23,12 +24,20 @@ class TcpClient {
     bool is_connected() const;
 
     // Request operations
-    Result<Response> send_get_request(const std::string& key);
+    Result<Response> send_get_request(
+        const std::string& key,
+        ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL);
 
-    Result<Response> send_put_request(const std::string& key,
-                                      const std::string& value);
+    Result<Response> send_put_request(
+        const std::string& key, const std::string& value,
+        ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL);
 
-    Result<Response> send_delete_request(const std::string& key);
+    Result<Response> send_delete_request(
+        const std::string& key,
+        ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL);
+
+    Result<std::unique_ptr<Response>> send_health_check_request(
+        bool include_details = false);
 
     // Low-level request sending
     Result<Response> send_request(const Request& request);

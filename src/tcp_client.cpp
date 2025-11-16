@@ -78,26 +78,71 @@ void TcpClient::disconnect() {
 
 bool TcpClient::is_connected() const { return connected_; }
 
-Result<Response> TcpClient::send_get_request(const std::string& key) {
-    GetRequest request(key);
+Result<Response> TcpClient::send_get_request(const std::string& key,
+                                             ConsistencyLevel consistency) {
+    GetRequest request(key, consistency);
     request.request_id = generate_request_id();
     request.sender_id = "cli";
     return send_request(request);
 }
 
 Result<Response> TcpClient::send_put_request(const std::string& key,
-                                             const std::string& value) {
-    PutRequest request(key, value);
+                                             const std::string& value,
+                                             ConsistencyLevel consistency) {
+    PutRequest request(key, value, consistency);
     request.request_id = generate_request_id();
     request.sender_id = "cli";
     return send_request(request);
 }
 
-Result<Response> TcpClient::send_delete_request(const std::string& key) {
-    DeleteRequest request(key);
+Result<Response> TcpClient::send_delete_request(const std::string& key,
+                                                ConsistencyLevel consistency) {
+    DeleteRequest request(key, consistency);
     request.request_id = generate_request_id();
     request.sender_id = "cli";
     return send_request(request);
+}
+
+Result<std::unique_ptr<Response>> TcpClient::send_health_check_request(
+    bool include_details) {
+    if (!connected_) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Not connected to server");
+    }
+
+    HealthCheckRequest request(include_details);
+    request.request_id = generate_request_id();
+    request.sender_id = "cli";
+
+    auto serialized_request_result = JsonSerializer::serialize_request(request);
+    if (!serialized_request_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to serialize request: " +
+            serialized_request_result.error());
+    }
+    std::string serialized_request = serialized_request_result.value();
+
+    auto send_result = send_message(serialized_request);
+    if (!send_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to send request: " + send_result.error());
+    }
+
+    auto receive_result = receive_message();
+    if (!receive_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to receive response: " + receive_result.error());
+    }
+
+    auto response_result =
+        JsonSerializer::deserialize_response(receive_result.value());
+    if (!response_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to deserialize response: " + response_result.error());
+    }
+
+    return Result<std::unique_ptr<Response>>::success(
+        std::move(response_result.value()));
 }
 
 Result<Response> TcpClient::send_request(const Request& request) {

@@ -13,6 +13,9 @@ struct NodeConfig {
     std::vector<NodeAddress> seed_nodes;
     size_t replication_factor = 3;
     size_t virtual_nodes_per_physical = 50;
+    ConsistencyLevel default_consistency = ConsistencyLevel::EVENTUAL;
+    std::chrono::milliseconds heartbeat_interval{1000};
+    std::chrono::milliseconds failure_timeout{5000};
 
     NodeConfig() = default;
     NodeConfig(const std::string& host, uint16_t port) : address(host, port) {}
@@ -23,6 +26,12 @@ struct ClusterConfig {
     size_t min_cluster_size = 3;
     size_t max_cluster_size = 100;
     size_t default_replication_factor = 3;
+    ConsistencyLevel default_consistency = ConsistencyLevel::EVENTUAL;
+    std::chrono::milliseconds gossip_interval{200};
+    std::chrono::milliseconds failure_detection_timeout{5000};
+    std::chrono::milliseconds join_timeout{10000};
+    bool auto_rebalance = true;
+    double load_balance_threshold = 1.5;
 
     ClusterConfig() = default;
 

@@ -13,6 +13,7 @@ namespace trelliskv {
 
 struct ClusterState;
 
+// Requests
 struct Request {
     std::string request_id;
     NodeId sender_id;
@@ -28,10 +29,13 @@ struct Request {
 
 struct GetRequest : public Request {
     std::string key;
+    ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL;
     std::optional<TimestampVersion> client_version;
 
     GetRequest() = default;
-    GetRequest(const std::string& k) : key(k) {}
+    GetRequest(const std::string& k,
+               ConsistencyLevel c = ConsistencyLevel::EVENTUAL)
+        : key(k), consistency(c) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;
@@ -41,10 +45,13 @@ struct PutRequest : public Request {
     std::string key;
     std::string value;
     std::optional<TimestampVersion> expected_version;
+    ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL;
     bool is_replication = false;
 
     PutRequest() = default;
-    PutRequest(const std::string& k, const std::string& v) : key(k), value(v) {}
+    PutRequest(const std::string& k, const std::string& v,
+               ConsistencyLevel c = ConsistencyLevel::EVENTUAL)
+        : key(k), value(v), consistency(c) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;
@@ -53,9 +60,12 @@ struct PutRequest : public Request {
 struct DeleteRequest : public Request {
     std::string key;
     std::optional<TimestampVersion> expected_version;
+    ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL;
 
     DeleteRequest() = default;
-    DeleteRequest(const std::string& k) : key(k) {}
+    DeleteRequest(const std::string& k,
+                  ConsistencyLevel c = ConsistencyLevel::EVENTUAL)
+        : key(k), consistency(c) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;
@@ -111,6 +121,7 @@ struct Response {
     virtual void from_json(const nlohmann::json& json);
 };
 
+// Cluster Discovery
 struct ClusterDiscoveryRequest : public Request {
     NodeId requesting_node_id;
     NodeAddress requesting_node_address;
@@ -139,6 +150,7 @@ struct ClusterDiscoveryResponse : public Response {
     void from_json(const nlohmann::json& json) override;
 };
 
+// Bootstrap
 struct BootstrapRequest : public Request {
     NodeId requesting_node_id;
     NodeAddress requesting_node_address;
@@ -160,6 +172,73 @@ struct BootstrapResponse : public Response {
     BootstrapResponse(std::shared_ptr<ClusterState> state,
                       const NodeId& responder)
         : cluster_state(state), responding_node_id(responder) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+// Heartbeats
+struct HeartbeatRequest : public Request {
+    uint64_t sequence_number;
+    NodeState sender_state;
+    Timestamp timestamp;
+
+    HeartbeatRequest() = default;
+    HeartbeatRequest(const NodeId& sender, uint64_t seq, NodeState state)
+        : Request("", sender),
+          sequence_number(seq),
+          sender_state(state),
+          timestamp(std::chrono::system_clock::now()) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+struct HeartbeatResponse : public Response {
+    uint64_t sequence_number;
+    NodeState responder_state;
+    Timestamp timestamp;
+
+    HeartbeatResponse() = default;
+    HeartbeatResponse(uint64_t seq, NodeState state)
+        : Response(ResponseStatus::OK),
+          sequence_number(seq),
+          responder_state(state),
+          timestamp(std::chrono::system_clock::now()) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+struct HealthCheckRequest : public Request {
+    bool include_details = false;
+
+    HealthCheckRequest() = default;
+    explicit HealthCheckRequest(bool details) : include_details(details) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+struct HealthCheckResponse : public Response {
+    std::string node_id;
+    NodeState node_state;
+    bool is_healthy;
+    std::string uptime;
+
+    size_t active_connections = 0;
+    size_t total_nodes = 0;
+    size_t local_keys = 0;
+    size_t total_requests = 0;
+
+    HealthCheckResponse() = default;
+    HealthCheckResponse(const std::string& id, NodeState state, bool healthy,
+                        const std::string& up)
+        : Response(ResponseStatus::OK),
+          node_id(id),
+          node_state(state),
+          is_healthy(healthy),
+          uptime(up) {}
 
     void to_json(nlohmann::json& json) const override;
     void from_json(const nlohmann::json& json) override;

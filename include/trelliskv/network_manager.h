@@ -10,10 +10,12 @@
 #include <unordered_map>
 
 #include "result.h"
+#include "types.h"
 
 namespace trelliskv {
 
 class ThreadPool;
+class ConnectionPool;
 struct Request;
 struct Response;
 struct NodeAddress;
@@ -27,7 +29,6 @@ class NetworkManager {
     explicit NetworkManager(uint16_t port = 0);
     ~NetworkManager();
 
-    // Server
     Result<void> start_server(uint16_t port);
     void stop_server();
     bool is_server_running() const;
@@ -35,10 +36,12 @@ class NetworkManager {
 
     void set_message_handler(MessageHandler handler);
 
-    // Client
     Result<std::unique_ptr<Response>> send_request(
         const NodeAddress& target, const Request& request,
         std::chrono::milliseconds timeout = std::chrono::milliseconds(5000));
+
+    void send_message_async(const NodeAddress& target,
+                            const std::string& message);
 
     void close_connection(ConnectionId conn_id);
     void close_all_connections();
@@ -67,14 +70,20 @@ class NetworkManager {
     Result<void> set_socket_timeout(int socket,
                                     std::chrono::milliseconds timeout);
     void close_socket(int socket);
+    Result<std::string> serialize_request(const Request& request);
+    Result<std::string> serialize_response(const Response& response);
+    Result<std::unique_ptr<Request>> deserialize_request(
+        const std::string& data);
+    Result<std::unique_ptr<Response>> deserialize_response(
+        const std::string& data);
 
     int server_socket_;
     uint16_t server_port_;
     std::atomic<bool> server_running_;
     std::unique_ptr<ThreadPool> thread_pool_;
+    std::unique_ptr<ConnectionPool> connection_pool_;
     std::atomic<ConnectionId> next_connection_id_;
     std::thread accept_thread_;
-    std::thread uds_accept_thread_;
 
     mutable std::mutex connections_mutex_;
     std::unordered_map<ConnectionId, std::thread> active_connections_;

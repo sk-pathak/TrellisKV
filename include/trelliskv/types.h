@@ -10,6 +10,11 @@ using Timestamp = std::chrono::system_clock::time_point;
 
 enum class NodeState { ACTIVE, FAILED };
 
+enum class ConsistencyLevel {
+    EVENTUAL
+    // STRONG (maybe later)
+};
+
 enum class ResponseStatus { OK, NOT_FOUND, ERROR, CONFLICT, TIMEOUT };
 
 struct TimestampVersion {

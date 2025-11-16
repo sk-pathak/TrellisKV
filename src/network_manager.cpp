@@ -15,6 +15,7 @@
 #include <iostream>
 #include <thread>
 
+#include "trelliskv/connection_pool.h"
 #include "trelliskv/json_serializer.h"
 #include "trelliskv/messages.h"
 #include "trelliskv/node_info.h"
@@ -564,6 +565,31 @@ Result<void> NetworkManager::set_socket_timeout(
     return Result<void>::success();
 }
 
+// Async message sending (fire and forget)
+void NetworkManager::send_message_async(const NodeAddress& target,
+                                        const std::string& message) {
+    thread_pool_->enqueue([this, target, message]() {
+        try {
+            auto request_result = deserialize_request(message);
+            if (!request_result) {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                stats_.failed_requests++;
+                return;
+            }
+
+            connection_pool_->send_request(target, *request_result.value(),
+                                           std::chrono::milliseconds(500));
+
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.total_requests_sent++;
+        } catch (const std::exception& e) {
+            // Just log error, fire and forget
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            stats_.failed_requests++;
+        }
+    });
+}
+
 void NetworkManager::close_socket(int socket) {
     if (socket < 0) {
         return;
@@ -571,6 +597,26 @@ void NetworkManager::close_socket(int socket) {
 
     shutdown(socket, SHUT_RDWR);
     close(socket);
+}
+
+// JSON serialization methods
+Result<std::string> NetworkManager::serialize_request(const Request& request) {
+    return JsonSerializer::serialize_request(request);
+}
+
+Result<std::string> NetworkManager::serialize_response(
+    const Response& response) {
+    return JsonSerializer::serialize_response(response);
+}
+
+Result<std::unique_ptr<Request>> NetworkManager::deserialize_request(
+    const std::string& data) {
+    return JsonSerializer::deserialize_request(data);
+}
+
+Result<std::unique_ptr<Response>> NetworkManager::deserialize_response(
+    const std::string& data) {
+    return JsonSerializer::deserialize_response(data);
 }
 
 }  // namespace trelliskv

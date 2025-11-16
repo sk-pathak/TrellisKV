@@ -4,7 +4,9 @@
 #include <utility>
 
 #include "trelliskv/messages.h"
+#include "trelliskv/node_info.h"
 #include "trelliskv/tcp_client.h"
+#include "trelliskv/types.h"
 
 void print_usage(const char* program_name) {
     std::cout << "TrellisKV CLI Client" << std::endl;
@@ -49,6 +51,10 @@ std::pair<std::string, uint16_t> parse_address(const std::string& addr) {
 trelliskv::NodeAddress parse_server_address(const std::string& server_str) {
     auto [host, port] = parse_address(server_str);
     return trelliskv::NodeAddress(host, port);
+}
+
+trelliskv::ConsistencyLevel parse_consistency_level(const std::string&) {
+    return trelliskv::ConsistencyLevel::EVENTUAL;
 }
 
 int main(int argc, char* argv[]) {
@@ -113,8 +119,9 @@ int main(int argc, char* argv[]) {
 
         if (command == "get") {
             std::string key = argv[3];
+            auto consistency = trelliskv::ConsistencyLevel::EVENTUAL;
 
-            auto result = client.send_get_request(key);
+            auto result = client.send_get_request(key, consistency);
             if (!result.is_success()) {
                 std::cerr << "Error: " << result.error() << std::endl;
                 return 1;
@@ -133,8 +140,9 @@ int main(int argc, char* argv[]) {
         } else if (command == "put") {
             std::string key = argv[3];
             std::string value = argv[4];
+            auto consistency = trelliskv::ConsistencyLevel::EVENTUAL;
 
-            auto result = client.send_put_request(key, value);
+            auto result = client.send_put_request(key, value, consistency);
             if (!result.is_success()) {
                 std::cerr << "Error: " << result.error() << std::endl;
                 return 1;
@@ -150,8 +158,9 @@ int main(int argc, char* argv[]) {
 
         } else if (command == "delete") {
             std::string key = argv[3];
+            auto consistency = trelliskv::ConsistencyLevel::EVENTUAL;
 
-            auto result = client.send_delete_request(key);
+            auto result = client.send_delete_request(key, consistency);
             if (!result.is_success()) {
                 std::cerr << "Error: " << result.error() << std::endl;
                 return 1;
@@ -167,9 +176,47 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
 
-        } else {
-            std::cerr << "Error: Failed to get health status" << std::endl;
-            return 1;
+        } else if (command == "health") {
+            bool include_details =
+                (argc > 3 && std::string(argv[3]) == "--details");
+
+            auto result = client.send_health_check_request(include_details);
+            if (!result.is_success()) {
+                std::cerr << "Error: " << result.error() << std::endl;
+                return 1;
+            }
+
+            auto response = dynamic_cast<const trelliskv::HealthCheckResponse*>(
+                result.value().get());
+            if (response && response->is_success()) {
+                std::cout << "Node ID: " << response->node_id << std::endl;
+                std::cout << "Status: "
+                          << (response->is_healthy ? "HEALTHY" : "UNHEALTHY")
+                          << std::endl;
+                std::cout << "State: "
+                          << (response->node_state ==
+                                      trelliskv::NodeState::ACTIVE
+                                  ? "ACTIVE"
+                                  : "FAILED")
+                          << std::endl;
+                std::cout << "Uptime: " << response->uptime << std::endl;
+
+                if (include_details) {
+                    std::cout << "\nDetailed Statistics:" << std::endl;
+                    std::cout << "  Active Connections: "
+                              << response->active_connections << std::endl;
+                    std::cout << "  Total Nodes: " << response->total_nodes
+                              << std::endl;
+                    std::cout << "  Local Keys: " << response->local_keys
+                              << std::endl;
+                    std::cout
+                        << "  Total Requests: " << response->total_requests
+                        << std::endl;
+                }
+            } else {
+                std::cerr << "Error: Failed to get health status" << std::endl;
+                return 1;
+            }
         }
 
         return 0;

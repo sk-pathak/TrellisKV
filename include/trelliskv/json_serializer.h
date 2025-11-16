@@ -14,7 +14,11 @@ struct Response;
 struct GetRequest;
 struct PutRequest;
 struct DeleteRequest;
+struct ClusterDiscoveryRequest;
 struct BootstrapRequest;
+struct HeartbeatRequest;
+struct HealthCheckRequest;
+struct GossipMessage;
 struct NodeInfo;
 struct NodeAddress;
 struct TimestampVersion;
@@ -31,6 +35,10 @@ class JsonSerializer {
     static Result<std::string> serialize_response(const Response& response);
     static Result<std::unique_ptr<Response>> deserialize_response(
         const std::string& json_str);
+
+    // Gossip message
+    static Result<std::string> serialize_gossip_message(
+        const GossipMessage& message);
 
     // Helper methods for common types
     static nlohmann::json serialize_node_info(const NodeInfo& node);
@@ -50,6 +58,10 @@ class JsonSerializer {
     // Enum
     static std::string response_status_to_string(ResponseStatus status);
     static Result<ResponseStatus> string_to_response_status(
+        const std::string& str);
+
+    static std::string consistency_level_to_string(ConsistencyLevel level);
+    static Result<ConsistencyLevel> string_to_consistency_level(
         const std::string& str);
 
     static std::string node_state_to_string(NodeState state);

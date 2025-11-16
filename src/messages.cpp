@@ -7,6 +7,7 @@
 
 namespace trelliskv {
 
+// Base Request
 void Request::to_json(nlohmann::json& json) const {
     json["request_id"] = request_id;
     json["sender_id"] = sender_id;
@@ -21,10 +22,13 @@ void Request::from_json(const nlohmann::json& json) {
     }
 }
 
+// GetRequest
 void GetRequest::to_json(nlohmann::json& json) const {
     Request::to_json(json);
     json["type"] = "GET";
     json["key"] = key;
+    json["consistency"] =
+        JsonSerializer::consistency_level_to_string(consistency);
     if (client_version.has_value()) {
         json["client_version"] =
             JsonSerializer::serialize_timestamp_version(client_version.value());
@@ -36,6 +40,13 @@ void GetRequest::from_json(const nlohmann::json& json) {
     if (json.contains("key")) {
         key = json["key"];
     }
+    if (json.contains("consistency")) {
+        auto result =
+            JsonSerializer::string_to_consistency_level(json["consistency"]);
+        if (result) {
+            consistency = result.value();
+        }
+    }
     if (json.contains("client_version")) {
         auto result = JsonSerializer::deserialize_timestamp_version(
             json["client_version"]);
@@ -45,12 +56,14 @@ void GetRequest::from_json(const nlohmann::json& json) {
     }
 }
 
-// PutRequest implementation
+// PutRequest
 void PutRequest::to_json(nlohmann::json& json) const {
     Request::to_json(json);
     json["type"] = "PUT";
     json["key"] = key;
     json["value"] = value;
+    json["consistency"] =
+        JsonSerializer::consistency_level_to_string(consistency);
     json["is_replication"] = is_replication;
     if (expected_version.has_value()) {
         json["expected_version"] = JsonSerializer::serialize_timestamp_version(
@@ -66,6 +79,13 @@ void PutRequest::from_json(const nlohmann::json& json) {
     if (json.contains("value")) {
         value = json["value"];
     }
+    if (json.contains("consistency")) {
+        auto result =
+            JsonSerializer::string_to_consistency_level(json["consistency"]);
+        if (result) {
+            consistency = result.value();
+        }
+    }
     if (json.contains("is_replication")) {
         is_replication = json["is_replication"];
     }
@@ -78,10 +98,13 @@ void PutRequest::from_json(const nlohmann::json& json) {
     }
 }
 
+// DeleteRequest
 void DeleteRequest::to_json(nlohmann::json& json) const {
     Request::to_json(json);
     json["type"] = "DELETE";
     json["key"] = key;
+    json["consistency"] =
+        JsonSerializer::consistency_level_to_string(consistency);
     if (expected_version.has_value()) {
         json["expected_version"] = JsonSerializer::serialize_timestamp_version(
             expected_version.value());
@@ -93,6 +116,13 @@ void DeleteRequest::from_json(const nlohmann::json& json) {
     if (json.contains("key")) {
         key = json["key"];
     }
+    if (json.contains("consistency")) {
+        auto result =
+            JsonSerializer::string_to_consistency_level(json["consistency"]);
+        if (result) {
+            consistency = result.value();
+        }
+    }
     if (json.contains("expected_version")) {
         auto result = JsonSerializer::deserialize_timestamp_version(
             json["expected_version"]);
@@ -102,6 +132,7 @@ void DeleteRequest::from_json(const nlohmann::json& json) {
     }
 }
 
+// ClusterDiscoveryRequest
 void ClusterDiscoveryRequest::to_json(nlohmann::json& json) const {
     Request::to_json(json);
     json["type"] = "CLUSTER_DISCOVERY";
@@ -124,7 +155,7 @@ void ClusterDiscoveryRequest::from_json(const nlohmann::json& json) {
     }
 }
 
-// BootstrapRequest implementation
+// BootstrapRequest
 void BootstrapRequest::to_json(nlohmann::json& json) const {
     Request::to_json(json);
     json["type"] = "BOOTSTRAP";
@@ -147,6 +178,50 @@ void BootstrapRequest::from_json(const nlohmann::json& json) {
     }
 }
 
+// HeartbeatRequest
+void HeartbeatRequest::to_json(nlohmann::json& json) const {
+    Request::to_json(json);
+    json["type"] = "HEARTBEAT";
+    json["sequence_number"] = sequence_number;
+    json["sender_state"] = JsonSerializer::node_state_to_string(sender_state);
+    json["timestamp"] = JsonSerializer::serialize_timestamp(timestamp);
+}
+
+void HeartbeatRequest::from_json(const nlohmann::json& json) {
+    Request::from_json(json);
+    if (json.contains("sequence_number")) {
+        sequence_number = json["sequence_number"];
+    }
+    if (json.contains("sender_state")) {
+        auto result =
+            JsonSerializer::string_to_node_state(json["sender_state"]);
+        if (result) {
+            sender_state = result.value();
+        }
+    }
+    if (json.contains("timestamp")) {
+        auto result = JsonSerializer::deserialize_timestamp(json["timestamp"]);
+        if (result) {
+            timestamp = result.value();
+        }
+    }
+}
+
+// HealthCheckRequest
+void HealthCheckRequest::to_json(nlohmann::json& json) const {
+    Request::to_json(json);
+    json["type"] = "HEALTH_CHECK";
+    json["include_details"] = include_details;
+}
+
+void HealthCheckRequest::from_json(const nlohmann::json& json) {
+    Request::from_json(json);
+    if (json.contains("include_details")) {
+        include_details = json["include_details"];
+    }
+}
+
+// Base Response
 void Response::to_json(nlohmann::json& json) const {
     json["request_id"] = request_id;
     json["status"] = JsonSerializer::response_status_to_string(status);
@@ -192,6 +267,7 @@ void Response::from_json(const nlohmann::json& json) {
     }
 }
 
+// ClusterDiscoveryResponse
 void ClusterDiscoveryResponse::to_json(nlohmann::json& json) const {
     Response::to_json(json);
     json["type"] = "CLUSTER_DISCOVERY_RESPONSE";
@@ -220,6 +296,7 @@ void ClusterDiscoveryResponse::from_json(const nlohmann::json& json) {
     }
 }
 
+// BootstrapResponse
 void BootstrapResponse::to_json(nlohmann::json& json) const {
     Response::to_json(json);
     json["type"] = "BOOTSTRAP_RESPONSE";
@@ -246,6 +323,81 @@ void BootstrapResponse::from_json(const nlohmann::json& json) {
     if (json.contains("recommended_peers")) {
         recommended_peers =
             json["recommended_peers"].get<std::vector<NodeId>>();
+    }
+}
+
+// HeartbeatResponse
+void HeartbeatResponse::to_json(nlohmann::json& json) const {
+    Response::to_json(json);
+    json["type"] = "HEARTBEAT_RESPONSE";
+    json["sequence_number"] = sequence_number;
+    json["responder_state"] =
+        JsonSerializer::node_state_to_string(responder_state);
+    json["timestamp"] = JsonSerializer::serialize_timestamp(timestamp);
+}
+
+void HeartbeatResponse::from_json(const nlohmann::json& json) {
+    Response::from_json(json);
+    if (json.contains("sequence_number")) {
+        sequence_number = json["sequence_number"];
+    }
+    if (json.contains("responder_state")) {
+        auto result =
+            JsonSerializer::string_to_node_state(json["responder_state"]);
+        if (result) {
+            responder_state = result.value();
+        }
+    }
+    if (json.contains("timestamp")) {
+        auto result = JsonSerializer::deserialize_timestamp(json["timestamp"]);
+        if (result) {
+            timestamp = result.value();
+        }
+    }
+}
+
+// HealthCheckResponse
+void HealthCheckResponse::to_json(nlohmann::json& json) const {
+    Response::to_json(json);
+    json["type"] = "HEALTH_CHECK_RESPONSE";
+    json["node_id"] = node_id;
+    json["node_state"] = JsonSerializer::node_state_to_string(node_state);
+    json["is_healthy"] = is_healthy;
+    json["uptime"] = uptime;
+    json["active_connections"] = active_connections;
+    json["total_nodes"] = total_nodes;
+    json["local_keys"] = local_keys;
+    json["total_requests"] = total_requests;
+}
+
+void HealthCheckResponse::from_json(const nlohmann::json& json) {
+    Response::from_json(json);
+    if (json.contains("node_id")) {
+        node_id = json["node_id"];
+    }
+    if (json.contains("node_state")) {
+        auto result = JsonSerializer::string_to_node_state(json["node_state"]);
+        if (result) {
+            node_state = result.value();
+        }
+    }
+    if (json.contains("is_healthy")) {
+        is_healthy = json["is_healthy"];
+    }
+    if (json.contains("uptime")) {
+        uptime = json["uptime"];
+    }
+    if (json.contains("active_connections")) {
+        active_connections = json["active_connections"];
+    }
+    if (json.contains("total_nodes")) {
+        total_nodes = json["total_nodes"];
+    }
+    if (json.contains("local_keys")) {
+        local_keys = json["local_keys"];
+    }
+    if (json.contains("total_requests")) {
+        total_requests = json["total_requests"];
     }
 }
 

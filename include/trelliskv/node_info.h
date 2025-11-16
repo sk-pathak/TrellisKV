@@ -23,8 +23,6 @@ struct NodeAddress {
     }
 };
 
-using NodeAddressHash = std::hash<trelliskv::NodeAddress>;
-
 struct NodeInfo {
     NodeId id;
     NodeAddress address;
@@ -47,13 +45,3 @@ struct NodeInfo {
 };
 
 }  // namespace trelliskv
-
-namespace std {
-template <>
-struct hash<trelliskv::NodeAddress> {
-    size_t operator()(const trelliskv::NodeAddress& addr) const {
-        return hash<string>()(addr.hostname) ^
-               (hash<uint16_t>()(addr.port) << 1);
-    }
-};
-}  // namespace std

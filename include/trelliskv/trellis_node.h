@@ -20,6 +20,7 @@ class StorageEngine;
 class HashRing;
 class ConnectionPool;
 class RequestRouter;
+class GossipProtocol;
 
 class TrellisNode {
    public:
@@ -55,6 +56,8 @@ class TrellisNode {
     Response handle_get_request(const GetRequest& request);
     Response handle_put_request(const PutRequest& request);
     Response handle_delete_request(const DeleteRequest& request);
+    std::unique_ptr<Response> handle_health_check_request(
+        const HealthCheckRequest& request);
     std::string generate_request_id() const;
     Result<void> discover_cluster_from_seeds();
     Result<ClusterState> contact_seed_node(const NodeAddress& seed_address);
@@ -75,6 +78,7 @@ class TrellisNode {
     std::unique_ptr<HashRing> hash_ring_;
     std::unique_ptr<ConnectionPool> connection_pool_;
     std::unique_ptr<RequestRouter> request_router_;
+    std::unique_ptr<GossipProtocol> gossip_protocol_;
 
     mutable std::mutex stats_mutex_;
     ClusterStats stats_;
