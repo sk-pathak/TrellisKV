@@ -27,19 +27,20 @@
 - `cmake --preset debug`
 - `cmake --build --preset debug`
 
-## Plans
---------------------
-
-- eventual consistency -> conflict?
-- replication
-- sharding
-- communication pooling??
-- data transfer?
-- eviction? lru+ttl
-- concurrency
-- optimizations?? (parallel algos?, UDS)
-
 ## Next
 --------------------
 
-- hash ring (consistent hashing)
+- replication manager
+- read-from-replica
+- docs
+- batch messages
+- cache eviction policy (lru)
+- ttl support (in lru)
+- uds
+- nagle
+- parallel algos??
+
+- test
+- benchmark
+- docker
+- docs
