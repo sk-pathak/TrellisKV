@@ -14,6 +14,8 @@ struct Response;
 struct GetRequest;
 struct PutRequest;
 struct DeleteRequest;
+struct BatchPutRequest;
+struct BatchGetRequest;
 struct ClusterDiscoveryRequest;
 struct BootstrapRequest;
 struct HeartbeatRequest;

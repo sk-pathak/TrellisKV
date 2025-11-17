@@ -39,6 +39,15 @@ class TcpClient {
     Result<std::unique_ptr<Response>> send_health_check_request(
         bool include_details = false);
 
+    // Batch operations
+    Result<std::unique_ptr<Response>> send_batch_put_request(
+        const std::vector<std::pair<std::string, std::string>>& items,
+        ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL);
+
+    Result<std::unique_ptr<Response>> send_batch_get_request(
+        const std::vector<std::string>& keys,
+        ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL);
+
     // Low-level request sending
     Result<Response> send_request(const Request& request);
 

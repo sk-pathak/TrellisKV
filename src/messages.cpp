@@ -131,6 +131,61 @@ void DeleteRequest::from_json(const nlohmann::json& json) {
     }
 }
 
+// Batch Requests
+void BatchPutRequest::to_json(nlohmann::json& json) const {
+    Request::to_json(json);
+    json["type"] = "BATCH_PUT";
+    json["consistency"] =
+        JsonSerializer::consistency_level_to_string(consistency);
+    nlohmann::json items_json = nlohmann::json::array();
+    for (const auto& item : items) {
+        items_json.push_back({{"key", item.key}, {"value", item.value}});
+    }
+    json["items"] = items_json;
+}
+
+void BatchPutRequest::from_json(const nlohmann::json& json) {
+    Request::from_json(json);
+    if (json.contains("consistency")) {
+        auto result =
+            JsonSerializer::string_to_consistency_level(json["consistency"]);
+        if (result) {
+            consistency = result.value();
+        }
+    }
+    if (json.contains("items") && json["items"].is_array()) {
+        items.clear();
+        for (const auto& item : json["items"]) {
+            KeyValue kv;
+            if (item.contains("key")) kv.key = item["key"];
+            if (item.contains("value")) kv.value = item["value"];
+            items.push_back(kv);
+        }
+    }
+}
+
+void BatchGetRequest::to_json(nlohmann::json& json) const {
+    Request::to_json(json);
+    json["type"] = "BATCH_GET";
+    json["consistency"] =
+        JsonSerializer::consistency_level_to_string(consistency);
+    json["keys"] = keys;
+}
+
+void BatchGetRequest::from_json(const nlohmann::json& json) {
+    Request::from_json(json);
+    if (json.contains("consistency")) {
+        auto result =
+            JsonSerializer::string_to_consistency_level(json["consistency"]);
+        if (result) {
+            consistency = result.value();
+        }
+    }
+    if (json.contains("keys")) {
+        keys = json["keys"].get<std::vector<std::string>>();
+    }
+}
+
 // ClusterDiscoveryRequest
 void ClusterDiscoveryRequest::to_json(nlohmann::json& json) const {
     Request::to_json(json);
@@ -263,6 +318,79 @@ void Response::from_json(const nlohmann::json& json) {
     }
     if (json.contains("error_message")) {
         error_message = json["error_message"];
+    }
+}
+
+// Batch Responses
+void BatchPutResponse::to_json(nlohmann::json& json) const {
+    Response::to_json(json);
+    json["type"] = "BATCH_PUT_RESPONSE";
+    json["successful_count"] = successful_count;
+    json["failed_count"] = failed_count;
+    nlohmann::json results_json = nlohmann::json::array();
+    for (const auto& result : results) {
+        results_json.push_back({{"key", result.key},
+                                {"success", result.success},
+                                {"error_message", result.error_message}});
+    }
+    json["results"] = results_json;
+}
+
+void BatchPutResponse::from_json(const nlohmann::json& json) {
+    Response::from_json(json);
+    if (json.contains("successful_count")) {
+        successful_count = json["successful_count"];
+    }
+    if (json.contains("failed_count")) {
+        failed_count = json["failed_count"];
+    }
+    if (json.contains("results") && json["results"].is_array()) {
+        results.clear();
+        for (const auto& item : json["results"]) {
+            ResultItem ri;
+            if (item.contains("key")) ri.key = item["key"];
+            if (item.contains("success")) ri.success = item["success"];
+            if (item.contains("error_message"))
+                ri.error_message = item["error_message"];
+            results.push_back(ri);
+        }
+    }
+}
+
+void BatchGetResponse::to_json(nlohmann::json& json) const {
+    Response::to_json(json);
+    json["type"] = "BATCH_GET_RESPONSE";
+    json["found_count"] = found_count;
+    json["not_found_count"] = not_found_count;
+    nlohmann::json results_json = nlohmann::json::array();
+    for (const auto& result : results) {
+        results_json.push_back({{"key", result.key},
+                                {"found", result.found},
+                                {"value", result.value},
+                                {"error_message", result.error_message}});
+    }
+    json["results"] = results_json;
+}
+
+void BatchGetResponse::from_json(const nlohmann::json& json) {
+    Response::from_json(json);
+    if (json.contains("found_count")) {
+        found_count = json["found_count"];
+    }
+    if (json.contains("not_found_count")) {
+        not_found_count = json["not_found_count"];
+    }
+    if (json.contains("results") && json["results"].is_array()) {
+        results.clear();
+        for (const auto& item : json["results"]) {
+            ResultItem ri;
+            if (item.contains("key")) ri.key = item["key"];
+            if (item.contains("found")) ri.found = item["found"];
+            if (item.contains("value")) ri.value = item["value"];
+            if (item.contains("error_message"))
+                ri.error_message = item["error_message"];
+            results.push_back(ri);
+        }
     }
 }
 

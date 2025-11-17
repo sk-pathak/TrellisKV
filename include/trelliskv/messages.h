@@ -71,6 +71,38 @@ struct DeleteRequest : public Request {
     void from_json(const nlohmann::json& json) override;
 };
 
+// Batch requests
+struct BatchPutRequest : public Request {
+    struct KeyValue {
+        std::string key;
+        std::string value;
+    };
+
+    std::vector<KeyValue> items;
+    ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL;
+
+    BatchPutRequest() = default;
+    explicit BatchPutRequest(const std::vector<KeyValue>& kvs,
+                             ConsistencyLevel c = ConsistencyLevel::EVENTUAL)
+        : items(kvs), consistency(c) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+struct BatchGetRequest : public Request {
+    std::vector<std::string> keys;
+    ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL;
+
+    BatchGetRequest() = default;
+    explicit BatchGetRequest(const std::vector<std::string>& k,
+                             ConsistencyLevel c = ConsistencyLevel::EVENTUAL)
+        : keys(k), consistency(c) {}
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
 struct Response {
     std::string request_id;
     ResponseStatus status;
@@ -119,6 +151,42 @@ struct Response {
 
     virtual void to_json(nlohmann::json& json) const;
     virtual void from_json(const nlohmann::json& json);
+};
+
+// Batch responses
+struct BatchPutResponse : public Response {
+    struct ResultItem {
+        std::string key;
+        bool success;
+        std::string error_message;
+    };
+
+    std::vector<ResultItem> results;
+    size_t successful_count = 0;
+    size_t failed_count = 0;
+
+    BatchPutResponse() = default;
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
+};
+
+struct BatchGetResponse : public Response {
+    struct ResultItem {
+        std::string key;
+        bool found;
+        std::string value;
+        std::string error_message;
+    };
+
+    std::vector<ResultItem> results;
+    size_t found_count = 0;
+    size_t not_found_count = 0;
+
+    BatchGetResponse() = default;
+
+    void to_json(nlohmann::json& json) const override;
+    void from_json(const nlohmann::json& json) override;
 };
 
 // Cluster Discovery

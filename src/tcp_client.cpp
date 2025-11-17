@@ -103,6 +103,106 @@ Result<Response> TcpClient::send_delete_request(const std::string& key,
     return send_request(request);
 }
 
+Result<std::unique_ptr<Response>> TcpClient::send_batch_put_request(
+    const std::vector<std::pair<std::string, std::string>>& items,
+    ConsistencyLevel consistency) {
+    if (!connected_) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Not connected to server");
+    }
+
+    BatchPutRequest request;
+    request.request_id = generate_request_id();
+    request.sender_id = "cli";
+    request.consistency = consistency;
+
+    for (const auto& [key, value] : items) {
+        request.items.push_back({key, value});
+    }
+
+    // Serialize request
+    auto serialized_request_result = JsonSerializer::serialize_request(request);
+    if (!serialized_request_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to serialize request: " +
+            serialized_request_result.error());
+    }
+    std::string serialized_request = serialized_request_result.value();
+
+    // Send request
+    auto send_result = send_message(serialized_request);
+    if (!send_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to send request: " + send_result.error());
+    }
+
+    // Receive response
+    auto receive_result = receive_message();
+    if (!receive_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to receive response: " + receive_result.error());
+    }
+
+    // Deserialize response
+    auto response_result =
+        JsonSerializer::deserialize_response(receive_result.value());
+    if (!response_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to deserialize response: " + response_result.error());
+    }
+
+    return Result<std::unique_ptr<Response>>::success(
+        std::move(response_result.value()));
+}
+
+Result<std::unique_ptr<Response>> TcpClient::send_batch_get_request(
+    const std::vector<std::string>& keys, ConsistencyLevel consistency) {
+    if (!connected_) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Not connected to server");
+    }
+
+    BatchGetRequest request;
+    request.request_id = generate_request_id();
+    request.sender_id = "cli";
+    request.keys = keys;
+    request.consistency = consistency;
+
+    // Serialize request
+    auto serialized_request_result = JsonSerializer::serialize_request(request);
+    if (!serialized_request_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to serialize request: " +
+            serialized_request_result.error());
+    }
+    std::string serialized_request = serialized_request_result.value();
+
+    // Send request
+    auto send_result = send_message(serialized_request);
+    if (!send_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to send request: " + send_result.error());
+    }
+
+    // Receive response
+    auto receive_result = receive_message();
+    if (!receive_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to receive response: " + receive_result.error());
+    }
+
+    // Deserialize response
+    auto response_result =
+        JsonSerializer::deserialize_response(receive_result.value());
+    if (!response_result.is_success()) {
+        return Result<std::unique_ptr<Response>>::error(
+            "Failed to deserialize response: " + response_result.error());
+    }
+
+    return Result<std::unique_ptr<Response>>::success(
+        std::move(response_result.value()));
+}
+
 Result<std::unique_ptr<Response>> TcpClient::send_health_check_request(
     bool include_details) {
     if (!connected_) {

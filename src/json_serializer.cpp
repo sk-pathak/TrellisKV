@@ -46,6 +46,10 @@ Result<std::unique_ptr<Request>> JsonSerializer::deserialize_request(
             request = std::make_unique<HeartbeatRequest>();
         } else if (message_type == "HEALTH_CHECK") {
             request = std::make_unique<HealthCheckRequest>();
+        } else if (message_type == "BATCH_PUT") {
+            request = std::make_unique<BatchPutRequest>();
+        } else if (message_type == "BATCH_GET") {
+            request = std::make_unique<BatchGetRequest>();
         } else {
             return Result<std::unique_ptr<Request>>::error(
                 "Unknown message type: " + message_type);
@@ -93,6 +97,10 @@ Result<std::unique_ptr<Response>> JsonSerializer::deserialize_response(
             response = std::make_unique<HeartbeatResponse>();
         } else if (response_type == "HEALTH_CHECK_RESPONSE") {
             response = std::make_unique<HealthCheckResponse>();
+        } else if (response_type == "BATCH_PUT_RESPONSE") {
+            response = std::make_unique<BatchPutResponse>();
+        } else if (response_type == "BATCH_GET_RESPONSE") {
+            response = std::make_unique<BatchGetResponse>();
         } else {
             if (json.contains("cluster_state") ||
                 json.contains("responding_node_id") ||
