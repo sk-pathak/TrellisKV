@@ -15,7 +15,6 @@ Makefile
 .clangd/
 .clang-tidy
 .clang-format
-.cache
 
 # Editor / OS junk
 *.swp
@@ -39,3 +38,7 @@ Thumbs.db
 *.tmp
 *.bak
 *.old
+
+# clangd - symlinks for IDE integration
+compile_commands.json
+.cache
