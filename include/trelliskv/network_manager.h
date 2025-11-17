@@ -63,19 +63,11 @@ class NetworkManager {
     void handle_client_connection(ConnectionId conn_id, int client_socket);
     Result<std::string> receive_message(int socket);
     Result<void> send_message(int socket, const std::string& message);
-    Result<int> create_client_socket(const NodeAddress& target,
-                                     std::chrono::milliseconds timeout);
     void cleanup_connection(ConnectionId conn_id);
     Result<void> set_socket_options(int socket);
     Result<void> set_socket_timeout(int socket,
                                     std::chrono::milliseconds timeout);
     void close_socket(int socket);
-    Result<std::string> serialize_request(const Request& request);
-    Result<std::string> serialize_response(const Response& response);
-    Result<std::unique_ptr<Request>> deserialize_request(
-        const std::string& data);
-    Result<std::unique_ptr<Response>> deserialize_response(
-        const std::string& data);
 
     int server_socket_;
     uint16_t server_port_;

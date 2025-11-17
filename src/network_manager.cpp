@@ -54,6 +54,7 @@ NetworkManager::NetworkManager(uint16_t port)
       server_running_(false),
       thread_pool_(std::make_unique<ThreadPool>(
           std::thread::hardware_concurrency() * 2)),
+      connection_pool_(std::make_unique<ConnectionPool>(20)),
       next_connection_id_(1) {
     stats_.start_time = std::chrono::system_clock::now();
 }
@@ -162,50 +163,14 @@ Result<std::unique_ptr<Response>> NetworkManager::send_request(
         stats_.total_requests_sent++;
     }
 
-    // Create new socket for request
-    auto socket_result = create_client_socket(target, timeout);
-    if (!socket_result) {
+    auto result = connection_pool_->send_request(target, request, timeout);
+
+    if (!result) {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         stats_.failed_requests++;
-        return Result<std::unique_ptr<Response>>::error(socket_result.error());
     }
 
-    SocketGuard socket_guard(socket_result.value());
-
-    // Serialize and send request
-    auto serialized_request = JsonSerializer::serialize_request(request);
-    if (!serialized_request) {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.failed_requests++;
-        return Result<std::unique_ptr<Response>>::error(
-            serialized_request.error());
-    }
-
-    auto send_result =
-        send_message(socket_result.value(), serialized_request.value());
-    if (!send_result) {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.failed_requests++;
-        return Result<std::unique_ptr<Response>>::error(send_result.error());
-    }
-
-    // get the response
-    auto receive_result = receive_message(socket_result.value());
-    if (!receive_result) {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.failed_requests++;
-        return Result<std::unique_ptr<Response>>::error(receive_result.error());
-    }
-
-    auto response =
-        JsonSerializer::deserialize_response(receive_result.value());
-    if (!response) {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        stats_.failed_requests++;
-        return Result<std::unique_ptr<Response>>::error(response.error());
-    }
-
-    return response;
+    return result;
 }
 
 void NetworkManager::close_connection(ConnectionId conn_id) {
@@ -469,61 +434,6 @@ Result<void> NetworkManager::send_message(int socket,
     return Result<void>::success();
 }
 
-Result<int> NetworkManager::create_client_socket(
-    const NodeAddress& target, std::chrono::milliseconds timeout) {
-    // Create socket
-    int client_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (client_socket < 0) {
-        return Result<int>::error("Failed to create client socket: " +
-                                  std::string(strerror(errno)));
-    }
-
-    // Set socket options
-    auto opt_result = set_socket_options(client_socket);
-    if (!opt_result) {
-        close_socket(client_socket);
-        return Result<int>::error("Failed to set socket options: " +
-                                  opt_result.error());
-    }
-
-    // Set connection timeout
-    auto timeout_result = set_socket_timeout(client_socket, timeout);
-    if (!timeout_result) {
-        close_socket(client_socket);
-        return Result<int>::error("Failed to set socket timeout: " +
-                                  timeout_result.error());
-    }
-
-    // Resolve hostname to IP address
-    struct addrinfo hints{}, *result;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-
-    int status =
-        getaddrinfo(target.hostname.c_str(),
-                    std::to_string(target.port).c_str(), &hints, &result);
-    if (status != 0) {
-        close_socket(client_socket);
-        return Result<int>::error("Failed to resolve hostname " +
-                                  target.hostname + ": " +
-                                  std::string(gai_strerror(status)));
-    }
-
-    // Connect to target
-    int connect_result =
-        connect(client_socket, result->ai_addr, result->ai_addrlen);
-    int connect_errno = errno;
-    freeaddrinfo(result);
-
-    if (connect_result < 0) {
-        close_socket(client_socket);
-        return Result<int>::error("Failed to connect to " + target.to_string() +
-                                  ": " + std::string(strerror(connect_errno)));
-    }
-
-    return Result<int>::success(client_socket);
-}
-
 void NetworkManager::cleanup_connection(ConnectionId conn_id) {
     std::lock_guard<std::mutex> lock(connections_mutex_);
 
@@ -570,20 +480,25 @@ void NetworkManager::send_message_async(const NodeAddress& target,
                                         const std::string& message) {
     thread_pool_->enqueue([this, target, message]() {
         try {
-            auto request_result = deserialize_request(message);
+            auto request_result = JsonSerializer::deserialize_request(message);
             if (!request_result) {
                 std::lock_guard<std::mutex> lock(stats_mutex_);
                 stats_.failed_requests++;
                 return;
             }
 
-            connection_pool_->send_request(target, *request_result.value(),
-                                           std::chrono::milliseconds(500));
+            auto result =
+                connection_pool_->send_request(target, *request_result.value(),
+                                               std::chrono::milliseconds(5000));
 
-            std::lock_guard<std::mutex> lock(stats_mutex_);
-            stats_.total_requests_sent++;
+            if (result) {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                stats_.total_requests_sent++;
+            } else {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                stats_.failed_requests++;
+            }
         } catch (const std::exception& e) {
-            // Just log error, fire and forget
             std::lock_guard<std::mutex> lock(stats_mutex_);
             stats_.failed_requests++;
         }
@@ -597,26 +512,6 @@ void NetworkManager::close_socket(int socket) {
 
     shutdown(socket, SHUT_RDWR);
     close(socket);
-}
-
-// JSON serialization methods
-Result<std::string> NetworkManager::serialize_request(const Request& request) {
-    return JsonSerializer::serialize_request(request);
-}
-
-Result<std::string> NetworkManager::serialize_response(
-    const Response& response) {
-    return JsonSerializer::serialize_response(response);
-}
-
-Result<std::unique_ptr<Request>> NetworkManager::deserialize_request(
-    const std::string& data) {
-    return JsonSerializer::deserialize_request(data);
-}
-
-Result<std::unique_ptr<Response>> NetworkManager::deserialize_response(
-    const std::string& data) {
-    return JsonSerializer::deserialize_response(data);
 }
 
 }  // namespace trelliskv

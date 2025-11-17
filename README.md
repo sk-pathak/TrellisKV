@@ -30,8 +30,6 @@
 ## Next
 --------------------
 
-- replication manager
-- read-from-replica
 - docs
 - batch messages
 - cache eviction policy (lru)
