@@ -32,9 +32,7 @@ class ReplicationManager {
         std::chrono::system_clock::time_point start_time;
     };
 
-    ReplicationManager(
-        const NodeId& node_id, size_t replication_factor = 3,
-        ConsistencyLevel default_consistency = ConsistencyLevel::EVENTUAL);
+    ReplicationManager(const NodeId& node_id, size_t replication_factor = 3);
 
     ~ReplicationManager();
 
@@ -71,7 +69,6 @@ class ReplicationManager {
 
     NodeId node_id_;
     size_t replication_factor_;
-    ConsistencyLevel default_consistency_;
     std::atomic<bool> running_;
     std::atomic<bool> initialized_;
     std::chrono::milliseconds replication_timeout_;

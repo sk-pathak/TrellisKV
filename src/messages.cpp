@@ -1,7 +1,6 @@
 #include "trelliskv/messages.h"
 
-#include <nlohmann/json.hpp>
-
+#include "nlohmann/json.hpp"
 #include "trelliskv/cluster_state.h"
 #include "trelliskv/json_serializer.h"
 

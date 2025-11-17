@@ -1,7 +1,6 @@
 #include "trelliskv/gossip_message.h"
 
-#include <nlohmann/json.hpp>
-
+#include "nlohmann/json.hpp"
 #include "trelliskv/json_serializer.h"
 
 namespace trelliskv {

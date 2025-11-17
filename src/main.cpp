@@ -5,58 +5,37 @@
 
 #include "trelliskv/logger.h"
 #include "trelliskv/node_config.h"
-#include "trelliskv/node_info.h"
 #include "trelliskv/trellis_node.h"
 
-int main(int argc, char* argv[]) {
+void print_usage(const char* program_name) {
     std::cout << "TrellisKV - Distributed Key-Value Store" << std::endl;
     std::cout << "Version 1.0.0" << std::endl;
+    std::cout << "Usage: " << program_name
+              << " <port> [seed_host:seed_port] [options]" << std::endl;
+    std::cout << "Options:" << std::endl;
+    std::cout << "  --replication-factor N  Set replication factor (default: 3)"
+              << std::endl;
+    std::cout << "  --hostname HOST         Set hostname for cluster "
+                 "communication (default: localhost)"
+              << std::endl;
+    std::cout << "  --heartbeat-interval MS Set heartbeat interval in ms "
+                 "(default: 1000)"
+              << std::endl;
+    std::cout << "  --failure-timeout MS    Set failure timeout in ms "
+                 "(default: 5000)"
+              << std::endl;
+    std::cout << "Examples:" << std::endl;
+    std::cout << "  " << program_name << " 5000" << std::endl;
+    std::cout << "  " << program_name << " 5001 localhost:5000" << std::endl;
+    std::cout << "  " << program_name
+              << " 5002 localhost:5000 --replication-factor 2" << std::endl;
+}
 
-    if (argc < 2) {
-        std::cout << "Usage: " << argv[0]
-                  << " <port> [seed_host:seed_port] [options]" << std::endl;
-        std::cout << "Options:" << std::endl;
-        std::cout
-            << "  --replication-factor N  Set replication factor (default: 3)"
-            << std::endl;
-        std::cout << "  --heartbeat-interval MS Set heartbeat interval in ms "
-                     "(default: 1000)"
-                  << std::endl;
-        std::cout << "  --failure-timeout MS    Set failure timeout in ms "
-                     "(default: 5000)"
-                  << std::endl;
-        std::cout << "Examples:" << std::endl;
-        std::cout << "  " << argv[0] << " 5000" << std::endl;
-        std::cout << "  " << argv[0] << " 5001 localhost:5000" << std::endl;
-        std::cout << "  " << argv[0]
-                  << " 5002 localhost:5000 --replication-factor 2" << std::endl;
-        return 1;
-    }
-
-    // Help request
-    if (argc >= 2 &&
-        (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h")) {
-        std::cout << "Usage: " << argv[0]
-                  << " <port> [seed_host:seed_port] [options]" << std::endl;
-        std::cout << "Options:" << std::endl;
-        std::cout
-            << "  --replication-factor N  Set replication factor (default: 3)"
-            << std::endl;
-        std::cout << "  --hostname HOST         Set hostname for cluster "
-                     "communication (default: localhost)"
-                  << std::endl;
-        std::cout << "  --heartbeat-interval MS Set heartbeat interval in ms "
-                     "(default: 1000)"
-                  << std::endl;
-        std::cout << "  --failure-timeout MS    Set failure timeout in ms "
-                     "(default: 5000)"
-                  << std::endl;
-        std::cout << "Examples:" << std::endl;
-        std::cout << "  " << argv[0] << " 5000" << std::endl;
-        std::cout << "  " << argv[0] << " 5001 localhost:5000" << std::endl;
-        std::cout << "  " << argv[0]
-                  << " 5002 localhost:5000 --replication-factor 2" << std::endl;
-        return 0;
+int main(int argc, char* argv[]) {
+    if (argc < 2 || (argc >= 2 && (std::string(argv[1]) == "--help" ||
+                                   std::string(argv[1]) == "-h"))) {
+        print_usage(argv[0]);
+        return (argc < 2) ? 1 : 0;
     }
 
     try {

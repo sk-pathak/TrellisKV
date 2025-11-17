@@ -37,125 +37,153 @@ Result<std::unique_ptr<Response>> ConnectionPool::send_request(
     std::chrono::milliseconds timeout) {
     active_requests_++;
 
-    auto conn_result = get_or_create_connection(target, timeout);
-    if (!conn_result) {
-        failed_connections_++;
-        active_requests_--;
-        return Result<std::unique_ptr<Response>>::error(
-            "Failed to get connection: " + conn_result.error());
-    }
-
-    Connection* conn = conn_result.value();
-    bool connection_valid = true;
-
-    auto serialized_request_result = JsonSerializer::serialize_request(request);
-    if (!serialized_request_result) {
-        failed_connections_++;
-        active_requests_--;
-        return_connection(target, conn, false);
-        return Result<std::unique_ptr<Response>>::error(
-            "Failed to serialize request: " +
-            serialized_request_result.error());
-    }
-    std::string serialized_request = serialized_request_result.value();
-
-    uint32_t message_length =
-        htonl(static_cast<uint32_t>(serialized_request.length()));
-    ssize_t bytes_sent = send(conn->socket_fd, &message_length,
-                              sizeof(message_length), MSG_NOSIGNAL);
-
-    if (bytes_sent != sizeof(message_length)) {
-        connection_valid = false;
-        failed_connections_++;
-        active_requests_--;
-        return_connection(target, conn, false);
-        std::string error_msg = "Failed to send message length";
-        if (bytes_sent < 0) {
-            error_msg += ": " + std::string(strerror(errno));
+    const int max_retries = 2;
+    for (int retry = 0; retry < max_retries; ++retry) {
+        auto conn_result = get_or_create_connection(target, timeout);
+        if (!conn_result) {
+            failed_connections_++;
+            if (retry == max_retries - 1) {
+                active_requests_--;
+                return Result<std::unique_ptr<Response>>::error(
+                    "Failed to get connection: " + conn_result.error());
+            }
+            continue;
         }
-        return Result<std::unique_ptr<Response>>::error(error_msg);
-    }
 
-    bytes_sent = send(conn->socket_fd, serialized_request.c_str(),
-                      serialized_request.length(), MSG_NOSIGNAL);
-    if (static_cast<size_t>(bytes_sent) != serialized_request.length()) {
-        connection_valid = false;
-        failed_connections_++;
-        active_requests_--;
-        return_connection(target, conn, false);
-        std::string error_msg = "Failed to send request data";
-        if (bytes_sent < 0) {
-            error_msg += ": " + std::string(strerror(errno));
+        Connection* conn = conn_result.value();
+        bool connection_valid = true;
+
+        auto serialized_request_result =
+            JsonSerializer::serialize_request(request);
+        if (!serialized_request_result) {
+            failed_connections_++;
+            active_requests_--;
+            return_connection(target, conn, false);
+            return Result<std::unique_ptr<Response>>::error(
+                "Failed to serialize request: " +
+                serialized_request_result.error());
         }
-        return Result<std::unique_ptr<Response>>::error(error_msg);
-    }
+        std::string serialized_request = serialized_request_result.value();
 
-    uint32_t response_length = 0;
-    ssize_t bytes_received = recv(conn->socket_fd, &response_length,
-                                  sizeof(response_length), MSG_WAITALL);
+        uint32_t message_length =
+            htonl(static_cast<uint32_t>(serialized_request.length()));
+        ssize_t bytes_sent = send(conn->socket_fd, &message_length,
+                                  sizeof(message_length), MSG_NOSIGNAL);
 
-    if (bytes_received != sizeof(response_length)) {
-        connection_valid = false;
-        failed_connections_++;
-        active_requests_--;
-        return_connection(target, conn, false);
-        std::string error_msg = "Failed to receive response length";
-        if (bytes_received < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                error_msg += ": timeout";
-            } else {
+        if (bytes_sent != sizeof(message_length)) {
+            connection_valid = false;
+            failed_connections_++;
+            return_connection(target, conn, false);
+
+            if (bytes_sent < 0 &&
+                (errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET)) {
+                if (retry < max_retries - 1) {
+                    continue;
+                }
+            }
+
+            active_requests_--;
+            std::string error_msg = "Failed to send message length";
+            if (bytes_sent < 0) {
                 error_msg += ": " + std::string(strerror(errno));
             }
-        } else if (bytes_received == 0) {
-            error_msg += ": connection closed by peer";
+            return Result<std::unique_ptr<Response>>::error(error_msg);
         }
-        return Result<std::unique_ptr<Response>>::error(error_msg);
-    }
 
-    response_length = ntohl(response_length);
+        bytes_sent = send(conn->socket_fd, serialized_request.c_str(),
+                          serialized_request.length(), MSG_NOSIGNAL);
+        if (static_cast<size_t>(bytes_sent) != serialized_request.length()) {
+            connection_valid = false;
+            failed_connections_++;
+            return_connection(target, conn, false);
 
-    if (response_length > 10 * 1024 * 1024) {
-        connection_valid = false;
-        failed_connections_++;
-        active_requests_--;
-        return_connection(target, conn, false);
-        return Result<std::unique_ptr<Response>>::error(
-            "Response too large: " + std::to_string(response_length));
-    }
+            if (bytes_sent < 0 &&
+                (errno == ENOTCONN || errno == EPIPE || errno == ECONNRESET)) {
+                if (retry < max_retries - 1) {
+                    continue;
+                }
+            }
 
-    std::string response_data(response_length, '\0');
-    bytes_received =
-        recv(conn->socket_fd, &response_data[0], response_length, MSG_WAITALL);
-
-    if (static_cast<uint32_t>(bytes_received) != response_length) {
-        connection_valid = false;
-        failed_connections_++;
-        active_requests_--;
-        return_connection(target, conn, false);
-        std::string error_msg = "Failed to receive complete response";
-        if (bytes_received < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                error_msg += ": timeout";
-            } else {
+            active_requests_--;
+            std::string error_msg = "Failed to send request data";
+            if (bytes_sent < 0) {
                 error_msg += ": " + std::string(strerror(errno));
             }
-        } else if (bytes_received == 0) {
-            error_msg += ": connection closed by peer";
+            return Result<std::unique_ptr<Response>>::error(error_msg);
         }
-        return Result<std::unique_ptr<Response>>::error(error_msg);
+
+        uint32_t response_length = 0;
+        ssize_t bytes_received = recv(conn->socket_fd, &response_length,
+                                      sizeof(response_length), MSG_WAITALL);
+
+        if (bytes_received != sizeof(response_length)) {
+            connection_valid = false;
+            failed_connections_++;
+            active_requests_--;
+            return_connection(target, conn, false);
+            std::string error_msg = "Failed to receive response length";
+            if (bytes_received < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    error_msg += ": timeout";
+                } else {
+                    error_msg += ": " + std::string(strerror(errno));
+                }
+            } else if (bytes_received == 0) {
+                error_msg += ": connection closed by peer";
+            }
+            return Result<std::unique_ptr<Response>>::error(error_msg);
+        }
+
+        response_length = ntohl(response_length);
+
+        if (response_length > 10 * 1024 * 1024) {
+            connection_valid = false;
+            failed_connections_++;
+            active_requests_--;
+            return_connection(target, conn, false);
+            return Result<std::unique_ptr<Response>>::error(
+                "Response too large: " + std::to_string(response_length));
+        }
+
+        std::string response_data(response_length, '\0');
+        bytes_received = recv(conn->socket_fd, &response_data[0],
+                              response_length, MSG_WAITALL);
+
+        if (static_cast<uint32_t>(bytes_received) != response_length) {
+            connection_valid = false;
+            failed_connections_++;
+            active_requests_--;
+            return_connection(target, conn, false);
+            std::string error_msg = "Failed to receive complete response";
+            if (bytes_received < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    error_msg += ": timeout";
+                } else {
+                    error_msg += ": " + std::string(strerror(errno));
+                }
+            } else if (bytes_received == 0) {
+                error_msg += ": connection closed by peer";
+            }
+            return Result<std::unique_ptr<Response>>::error(error_msg);
+        }
+
+        return_connection(target, conn, connection_valid);
+        active_requests_--;
+
+        auto response_result =
+            JsonSerializer::deserialize_response(response_data);
+        if (!response_result) {
+            return Result<std::unique_ptr<Response>>::error(
+                "Failed to deserialize response: " + response_result.error());
+        }
+
+        return Result<std::unique_ptr<Response>>::success(
+            std::move(response_result.value()));
     }
 
-    return_connection(target, conn, connection_valid);
     active_requests_--;
-
-    auto response_result = JsonSerializer::deserialize_response(response_data);
-    if (!response_result) {
-        return Result<std::unique_ptr<Response>>::error(
-            "Failed to deserialize response: " + response_result.error());
-    }
-
-    return Result<std::unique_ptr<Response>>::success(
-        std::move(response_result.value()));
+    return Result<std::unique_ptr<Response>>::error(
+        "All retry attempts failed");
 }
 
 void ConnectionPool::close_connections_to_node(const NodeAddress& target) {
@@ -265,6 +293,13 @@ Result<ConnectionPool::Connection*> ConnectionPool::get_or_create_connection(
 
     for (auto& conn : node_pool->connections) {
         if (conn && conn->socket_fd >= 0 && !conn->in_use.load()) {
+            if (!is_connection_valid(conn.get())) {
+                close_socket_fd(conn.get());
+                if (total_connections_ > 0) {
+                    total_connections_--;
+                }
+                continue;
+            }
             conn->in_use.store(true);
             conn->last_used = std::chrono::system_clock::now();
             node_pool->active_count++;
@@ -302,6 +337,13 @@ Result<ConnectionPool::Connection*> ConnectionPool::get_or_create_connection(
 
         for (auto& conn : node_pool->connections) {
             if (conn && conn->socket_fd >= 0 && !conn->in_use.load()) {
+                if (!is_connection_valid(conn.get())) {
+                    close_socket_fd(conn.get());
+                    if (total_connections_ > 0) {
+                        total_connections_--;
+                    }
+                    continue;
+                }
                 conn->in_use.store(true);
                 conn->last_used = std::chrono::system_clock::now();
                 node_pool->active_count++;

@@ -53,10 +53,6 @@ trelliskv::NodeAddress parse_server_address(const std::string& server_str) {
     return trelliskv::NodeAddress(host, port);
 }
 
-trelliskv::ConsistencyLevel parse_consistency_level(const std::string&) {
-    return trelliskv::ConsistencyLevel::EVENTUAL;
-}
-
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage(argv[0]);

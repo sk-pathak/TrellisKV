@@ -13,7 +13,7 @@ StorageEngine::~StorageEngine() {}
 Result<void> StorageEngine::put(const std::string& key,
                                 const VersionedValue& value) {
     try {
-        std::lock_guard<std::shared_mutex> lock(data_mutex_);
+        std::unique_lock<std::shared_mutex> lock(data_mutex_);
         data_[key] = value;
         return Result<void>::success();
     } catch (const std::exception& e) {
@@ -24,7 +24,7 @@ Result<void> StorageEngine::put(const std::string& key,
 
 Result<VersionedValue> StorageEngine::get(const std::string& key) const {
     try {
-        std::lock_guard<std::shared_mutex> lock(data_mutex_);
+        std::shared_lock<std::shared_mutex> lock(data_mutex_);
         auto it = data_.find(key);
         if (it != data_.end()) {
             return Result<VersionedValue>::success(it->second);
@@ -39,7 +39,7 @@ Result<VersionedValue> StorageEngine::get(const std::string& key) const {
 
 Result<bool> StorageEngine::remove(const std::string& key) {
     try {
-        std::lock_guard<std::shared_mutex> lock(data_mutex_);
+        std::unique_lock<std::shared_mutex> lock(data_mutex_);
         auto it = data_.find(key);
         if (it != data_.end()) {
             data_.erase(it);
@@ -54,7 +54,7 @@ Result<bool> StorageEngine::remove(const std::string& key) {
 
 Result<bool> StorageEngine::contains(const std::string& key) const {
     try {
-        std::lock_guard<std::shared_mutex> lock(data_mutex_);
+        std::shared_lock<std::shared_mutex> lock(data_mutex_);
         auto it = data_.find(key);
         if (it != data_.end()) return Result<bool>::success(true);
         return Result<bool>::success(false);
@@ -65,23 +65,22 @@ Result<bool> StorageEngine::contains(const std::string& key) const {
 }
 
 size_t StorageEngine::size() const {
-    std::lock_guard<std::shared_mutex> lock(data_mutex_);
+    std::shared_lock<std::shared_mutex> lock(data_mutex_);
     return data_.size();
 }
 
 bool StorageEngine::empty() const {
-    std::lock_guard<std::shared_mutex> lock(data_mutex_);
+    std::shared_lock<std::shared_mutex> lock(data_mutex_);
     return data_.empty();
 }
 
 void StorageEngine::clear() {
-    // std::unique_lock<std::mutex> lock(mutex_);
     std::unique_lock<std::shared_mutex> lock(data_mutex_);
     data_.clear();
 }
 
 std::vector<std::string> StorageEngine::get_all_keys() const {
-    std::lock_guard<std::shared_mutex> lock(data_mutex_);
+    std::shared_lock<std::shared_mutex> lock(data_mutex_);
     std::vector<std::string> keys;
     keys.reserve(data_.size());
     for (const auto& pair : data_) {

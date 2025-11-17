@@ -1,25 +1,32 @@
 #include "trelliskv/trellis_node.h"
 
 #include <random>
-#include <sstream>
 
+#include "trelliskv/cluster_state.h"
 #include "trelliskv/connection_pool.h"
 #include "trelliskv/gossip_protocol.h"
 #include "trelliskv/hash_ring.h"
+#include "trelliskv/json_serializer.h"
 #include "trelliskv/logger.h"
 #include "trelliskv/messages.h"
 #include "trelliskv/network_manager.h"
 #include "trelliskv/node_config.h"
 #include "trelliskv/node_info.h"
+#include "trelliskv/read_result.h"
+#include "trelliskv/replication_manager.h"
+#include "trelliskv/replication_request.h"
 #include "trelliskv/request_router.h"
 #include "trelliskv/storage_engine.h"
+#include "trelliskv/write_operation.h"
 
 namespace trelliskv {
 
 TrellisNode::TrellisNode(const NodeId& node_id, const NodeConfig& config)
     : node_id_(node_id), config_(config), running_(false) {
     network_manager_ = std::make_unique<NetworkManager>(config_.address.port);
+
     storage_engine_ = std::make_unique<StorageEngine>();
+
     hash_ring_ = std::make_unique<HashRing>();
     connection_pool_ = std::make_unique<ConnectionPool>(10);
 
@@ -32,32 +39,16 @@ TrellisNode::TrellisNode(const NodeId& node_id, const NodeConfig& config)
         node_id_, local_node_info, network_manager_.get(),
         config_.heartbeat_interval, config_.failure_timeout);
 
+    replication_manager_ = std::make_unique<ReplicationManager>(
+        node_id_, config_.replication_factor);
+
     network_manager_->set_message_handler(
         [this](const Request& request) -> std::unique_ptr<Response> {
             return handle_request(request);
         });
 }
 
-TrellisNode::~TrellisNode() {
-    if (gossip_protocol_) {
-        gossip_protocol_->stop();
-    }
-
-    if (gossip_protocol_) {
-        gossip_protocol_->set_node_failure_callback(nullptr);
-        gossip_protocol_->set_node_recovery_callback(nullptr);
-        gossip_protocol_->set_cluster_change_callback(nullptr);
-        gossip_protocol_->set_node_join_callback(nullptr);
-    }
-
-    if (network_manager_) {
-        network_manager_->stop_server();
-    }
-
-    if (connection_pool_) {
-        connection_pool_->close_all_connections();
-    }
-}
+TrellisNode::~TrellisNode() { stop(); }
 
 NodeConfig TrellisNode::create_default_config(const std::string& hostname,
                                               uint16_t port) {
@@ -85,7 +76,13 @@ Result<void> TrellisNode::start() {
     NodeInfo self_info;
     self_info.id = node_id_;
     self_info.address = config_.address;
+    self_info.state = NodeState::ACTIVE;
+    self_info.last_seen = std::chrono::system_clock::now();
+
     hash_ring_->add_node(self_info);
+
+    replication_manager_->initialize(hash_ring_.get(), network_manager_.get(),
+                                     storage_engine_.get());
 
     gossip_protocol_->set_node_failure_callback([this](const NodeId& node_id) {
         hash_ring_->remove_node(node_id);
@@ -114,6 +111,7 @@ Result<void> TrellisNode::start() {
             }
         });
 
+    replication_manager_->start();
     gossip_protocol_->start();
 
     running_.store(true);
@@ -122,22 +120,131 @@ Result<void> TrellisNode::start() {
 }
 
 void TrellisNode::stop() {
-    if (!running_.load()) {
+    if (!running_.exchange(false)) {
         return;
     }
 
-    running_.store(false);
+    try {
+        if (gossip_protocol_ && gossip_protocol_->is_running()) {
+            GossipMessage departure_message(node_id_);
+            departure_message.known_nodes.clear();
 
-    if (gossip_protocol_) {
-        gossip_protocol_->stop();
-    }
+            auto active_nodes = gossip_protocol_->get_active_nodes();
+            for (const auto& node_id : active_nodes) {
+                if (node_id != node_id_) {
+                    auto node_info = gossip_protocol_->get_node_info(node_id);
+                    if (node_info) {
+                        try {
+                            auto json_message_result =
+                                JsonSerializer::serialize_gossip_message(
+                                    departure_message);
+                            if (json_message_result) {
+                                network_manager_->send_message_async(
+                                    node_info->address,
+                                    json_message_result.value());
+                            }
+                        } catch (const std::exception& e) {
+                            LOG_WARN("Failed to send departure message: " +
+                                     std::string(e.what()));
+                        }
+                    }
+                }
+            }
 
-    if (network_manager_) {
-        network_manager_->stop_server();
-    }
+            gossip_protocol_->remove_node(node_id_);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        }
 
-    if (connection_pool_) {
-        connection_pool_->close_all_connections();
+        auto wait_start = std::chrono::system_clock::now();
+        const auto max_wait_time = std::chrono::seconds(5);
+
+        if (connection_pool_) {
+            while (connection_pool_->get_stats().active_requests > 0) {
+                auto elapsed = std::chrono::system_clock::now() - wait_start;
+                if (elapsed > max_wait_time) {
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+
+        if (storage_engine_ && replication_manager_ && request_router_) {
+            try {
+                auto all_keys = storage_engine_->get_all_keys();
+
+                const size_t max_transfer_attempts = 3;
+
+                for (const auto& key : all_keys) {
+                    if (request_router_->is_key_local(key)) {
+                        auto value_result = storage_engine_->get(key);
+                        if (value_result.is_success()) {
+                            WriteOperation transfer_op(
+                                key, value_result.value().value,
+                                value_result.value().version, node_id_,
+                                ConsistencyLevel::EVENTUAL);
+
+                            bool transfer_successful = false;
+                            for (size_t attempt = 0;
+                                 attempt < max_transfer_attempts &&
+                                 !transfer_successful;
+                                 ++attempt) {
+                                auto replicate_result =
+                                    replication_manager_->replicate_write(
+                                        transfer_op);
+                                if (replicate_result.is_success()) {
+                                    transfer_successful = true;
+                                } else {
+                                    if (attempt < max_transfer_attempts - 1) {
+                                        std::this_thread::sleep_for(
+                                            std::chrono::milliseconds(500));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+            } catch (const std::exception& e) {
+                LOG_ERROR("Error during data transfer on shutdown: " +
+                          std::string(e.what()));
+            }
+        }
+
+        if (gossip_protocol_) {
+            gossip_protocol_->set_node_failure_callback(nullptr);
+            gossip_protocol_->set_node_recovery_callback(nullptr);
+            gossip_protocol_->set_cluster_change_callback(nullptr);
+            gossip_protocol_->set_node_join_callback(nullptr);
+            gossip_protocol_->stop();
+        }
+
+        if (replication_manager_) {
+            replication_manager_->stop();
+        }
+
+        if (network_manager_) {
+            network_manager_->stop_server();
+        }
+
+        if (connection_pool_) {
+            connection_pool_->close_all_connections();
+        }
+
+    } catch (const std::exception& e) {
+        if (gossip_protocol_) {
+            gossip_protocol_->stop();
+        }
+        if (replication_manager_) {
+            replication_manager_->stop();
+        }
+        if (network_manager_) {
+            network_manager_->stop_server();
+        }
+        if (connection_pool_) {
+            connection_pool_->close_all_connections();
+        }
     }
 }
 
@@ -151,6 +258,8 @@ NodeInfo TrellisNode::get_node_info() const {
     NodeInfo info;
     info.id = node_id_;
     info.address = config_.address;
+    info.state = running_.load() ? NodeState::ACTIVE : NodeState::FAILED;
+    info.last_seen = std::chrono::system_clock::now();
     return info;
 }
 
@@ -178,21 +287,13 @@ Result<void> TrellisNode::join_cluster() {
 }
 
 void TrellisNode::add_node(const NodeInfo& node) {
-    if (hash_ring_) {
-        hash_ring_->add_node(node);
-    }
-    if (gossip_protocol_) {
-        gossip_protocol_->add_node(node);
-    }
+    hash_ring_->add_node(node);
+    gossip_protocol_->add_node(node);
 }
 
 void TrellisNode::remove_node(const NodeId& node_id) {
-    if (hash_ring_) {
-        hash_ring_->remove_node(node_id);
-    }
-    if (gossip_protocol_) {
-        gossip_protocol_->remove_node(node_id);
-    }
+    hash_ring_->remove_node(node_id);
+    gossip_protocol_->remove_node(node_id);
 
     auto node_info = hash_ring_->get_node_info(node_id);
     if (node_info) {
@@ -267,31 +368,50 @@ std::unique_ptr<Response> TrellisNode::handle_request(const Request& request) {
 }
 
 Response TrellisNode::handle_get_request(const GetRequest& request) {
-    const bool is_local = request_router_->is_key_local(request.key);
-
-    if (!is_local) {
-        auto forward_result = request_router_->forward_get_request(request);
-        if (forward_result) {
-            return *forward_result.value();
-        } else {
-            Response response = Response::error("Failed to forward request: " +
-                                                forward_result.error());
+    const bool is_internal = (!request.sender_id.empty() &&
+                              (request.sender_id == node_id_ ||
+                               request.sender_id.rfind("node_", 0) == 0));
+    if (is_internal) {
+        auto read_result = replication_manager_->read_with_consistency(
+            request.key, ConsistencyLevel::EVENTUAL);
+        if (read_result.is_success()) {
+            const auto& versioned_value = read_result.value.value();
+            Response response = Response::success(versioned_value.value,
+                                                  versioned_value.version);
             response.request_id = request.request_id;
             response.responder_id = node_id_;
             return response;
         }
+        if (read_result.is_not_found()) {
+            Response response = Response::not_found();
+            response.request_id = request.request_id;
+            response.responder_id = node_id_;
+            return response;
+        }
+        return Response::error("Read failed: " + read_result.error_message);
     }
 
-    auto result = storage_engine_->get(request.key);
+    const bool is_local = request_router_->is_key_local(request.key);
+    if (!is_local) {
+        auto forward_result = request_router_->forward_get_request(request);
+        if (forward_result) {
+            return *forward_result.value();
+        }
+    }
 
-    if (result) {
-        const auto& versioned_value = result.value();
+    auto read_result = replication_manager_->read_with_consistency(
+        request.key, request.consistency);
+
+    if (read_result.is_success()) {
+        const auto& versioned_value = read_result.value.value();
         Response response =
             Response::success(versioned_value.value, versioned_value.version);
         response.request_id = request.request_id;
         response.responder_id = node_id_;
         return response;
-    } else {
+    }
+
+    if (read_result.is_not_found()) {
         if (is_local && request.consistency == ConsistencyLevel::EVENTUAL) {
             auto forward_result = request_router_->forward_get_request(request);
             if (forward_result && forward_result.value()->is_success()) {
@@ -314,94 +434,93 @@ Response TrellisNode::handle_get_request(const GetRequest& request) {
                         return *alt.value();
                     }
                 }
-            } catch (...) {
-                // Best-effort fallback,just ignore errors
+            } catch (const std::exception& e) {
+                LOG_WARN("Exception during fallback node search: " +
+                         std::string(e.what()));
             }
         }
+
         Response response = Response::not_found();
         response.request_id = request.request_id;
         response.responder_id = node_id_;
         return response;
     }
+
+    if (read_result.is_conflict()) {
+        Response response = Response::conflict();
+        response.request_id = request.request_id;
+        response.responder_id = node_id_;
+        response.error_message = read_result.error_message;
+        return response;
+    }
+    return Response::error("Read failed: " + read_result.error_message);
 }
 
 Response TrellisNode::handle_put_request(const PutRequest& request) {
-    const bool is_local = request_router_->is_key_local(request.key);
+    if (request.is_replication) {
+        ReplicationRequest repl_request(
+            request.key, request.value,
+            request.expected_version.value_or(TimestampVersion{}),
+            request.sender_id);
 
-    if (!is_local) {
+        auto result =
+            replication_manager_->handle_replication_request(repl_request);
+        Response response = result;
+        response.request_id = request.request_id;
+        response.responder_id = node_id_;
+        return response;
+    }
+
+    if (request_router_->is_key_local(request.key)) {
+        WriteOperation write_op(
+            request.key, request.value,
+            request.expected_version.value_or(TimestampVersion{}), node_id_,
+            request.consistency);
+
+        write_op.version = TimestampVersion::now(node_id_);
+
+        auto result = replication_manager_->replicate_write(write_op);
+        if (result) {
+            Response response = Response::success("", write_op.version);
+            response.request_id = request.request_id;
+            response.responder_id = node_id_;
+            return response;
+        } else {
+            return Response::error("Failed to replicate write: " +
+                                   result.error());
+        }
+    } else {
+        // Forward to responsible node
         auto forward_result = request_router_->forward_put_request(request);
         if (forward_result) {
             return *forward_result.value();
         } else {
-            Response response = Response::error("Failed to forward request: " +
-                                                forward_result.error());
-            response.request_id = request.request_id;
-            response.responder_id = node_id_;
-            return response;
+            return Response::error("Failed to forward request: " +
+                                   forward_result.error());
         }
-    }
-
-    TimestampVersion new_version = TimestampVersion::now(node_id_);
-    VersionedValue versioned_value(request.value, new_version, node_id_);
-
-    if (request.expected_version.has_value()) {
-        auto current = storage_engine_->get(request.key);
-        if (current) {
-            if (!current.value().version.equals(
-                    request.expected_version.value())) {
-                Response response = Response::conflict();
-                response.request_id = request.request_id;
-                response.responder_id = node_id_;
-                response.error_message = "Version mismatch";
-                return response;
-            }
-        }
-    }
-
-    auto result = storage_engine_->put(request.key, versioned_value);
-    if (result) {
-        Response response = Response::success("", new_version);
-        response.request_id = request.request_id;
-        response.responder_id = node_id_;
-        return response;
-    } else {
-        Response response =
-            Response::error("Failed to write value: " + result.error());
-        response.request_id = request.request_id;
-        response.responder_id = node_id_;
-        return response;
     }
 }
 
 Response TrellisNode::handle_delete_request(const DeleteRequest& request) {
-    const bool is_local = request_router_->is_key_local(request.key);
-
-    if (!is_local) {
+    if (request_router_->is_key_local(request.key)) {
+        auto result = storage_engine_->remove(request.key);
+        if (result) {
+            Response response =
+                result.value() ? Response::success() : Response::not_found();
+            response.request_id = request.request_id;
+            response.responder_id = node_id_;
+            return response;
+        } else {
+            return Response::error("Failed to delete value: " + result.error());
+        }
+    } else {
         auto forward_result = request_router_->forward_delete_request(request);
         if (forward_result) {
             return *forward_result.value();
         } else {
-            Response response = Response::error("Failed to forward request: " +
-                                                forward_result.error());
-            response.request_id = request.request_id;
-            response.responder_id = node_id_;
-            return response;
+            return Response::error("Failed to forward request: " +
+                                   forward_result.error());
         }
-    }
-
-    auto result = storage_engine_->remove(request.key);
-    if (result) {
-        Response response =
-            result.value() ? Response::success() : Response::not_found();
-        response.request_id = request.request_id;
-        response.responder_id = node_id_;
-        return response;
-    } else {
-        Response response =
-            Response::error("Failed to delete value: " + result.error());
-        response.request_id = request.request_id;
-        response.responder_id = node_id_;
-        return response;
     }
 }
 
@@ -535,6 +654,7 @@ void TrellisNode::merge_discovered_cluster_state(
 
         if (node_info.is_active()) {
             hash_ring_->add_node(node_info);
+            gossip_protocol_->add_node(node_info);
         }
     }
 }
@@ -602,6 +722,8 @@ Result<void> TrellisNode::bootstrap_from_cluster() {
                                     if (peer_info !=
                                         bootstrap_response->cluster_state->nodes
                                             .end()) {
+                                        gossip_protocol_->add_node(
+                                            peer_info->second);
                                     }
                                 }
                             }
@@ -610,6 +732,8 @@ Result<void> TrellisNode::bootstrap_from_cluster() {
                 }
 
             } catch (const std::exception& e) {
+                LOG_WARN("Bootstrap attempt failed for node " + node_id + ": " +
+                         std::string(e.what()));
             }
         }
 
@@ -640,14 +764,7 @@ std::unique_ptr<Response> TrellisNode::handle_cluster_discovery_request(
                 "Invalid cluster discovery request: invalid node address"));
         }
 
-        ClusterState cluster_state;
-        auto all_nodes = hash_ring_->get_all_nodes();
-        for (const auto& node_id : all_nodes) {
-            auto node_info_opt = hash_ring_->get_node_info(node_id);
-            if (node_info_opt) {
-                cluster_state.nodes[node_id] = *node_info_opt;
-            }
-        }
+        auto cluster_state = gossip_protocol_->get_cluster_state();
 
         auto requesting_node_it =
             cluster_state.nodes.find(request.requesting_node_id);
@@ -656,7 +773,24 @@ std::unique_ptr<Response> TrellisNode::handle_cluster_discovery_request(
                                      request.requesting_node_address,
                                      NodeState::ACTIVE);
             cluster_state.nodes[request.requesting_node_id] = requesting_node;
+
+            gossip_protocol_->add_node(requesting_node);
             hash_ring_->add_node(requesting_node);
+
+            try {
+                auto active_nodes = gossip_protocol_->get_active_nodes();
+                for (const auto& peer_id : active_nodes) {
+                    if (peer_id != node_id_ &&
+                        peer_id != request.requesting_node_id) {
+                        gossip_protocol_->exchange_metadata(peer_id);
+                    }
+                }
+            } catch (const std::exception& e) {
+                LOG_WARN(
+                    "Failed to exchange metadata with peers during "
+                    "discovery: " +
+                    std::string(e.what()));
+            }
         } else {
             requesting_node_it->second.address =
                 request.requesting_node_address;
@@ -694,14 +828,7 @@ std::unique_ptr<Response> TrellisNode::handle_bootstrap_request(
                 "Invalid bootstrap request: invalid node address"));
         }
 
-        ClusterState cluster_state;
-        auto all_nodes = hash_ring_->get_all_nodes();
-        for (const auto& node_id : all_nodes) {
-            auto node_info_opt = hash_ring_->get_node_info(node_id);
-            if (node_info_opt) {
-                cluster_state.nodes[node_id] = *node_info_opt;
-            }
-        }
+        auto cluster_state = gossip_protocol_->get_cluster_state();
 
         auto requesting_node_it =
             cluster_state.nodes.find(request.requesting_node_id);
@@ -710,7 +837,24 @@ std::unique_ptr<Response> TrellisNode::handle_bootstrap_request(
                                      request.requesting_node_address,
                                      NodeState::ACTIVE);
             cluster_state.nodes[request.requesting_node_id] = requesting_node;
+
+            gossip_protocol_->add_node(requesting_node);
             hash_ring_->add_node(requesting_node);
+
+            try {
+                auto active_nodes = gossip_protocol_->get_active_nodes();
+                for (const auto& peer_id : active_nodes) {
+                    if (peer_id != node_id_ &&
+                        peer_id != request.requesting_node_id) {
+                        gossip_protocol_->exchange_metadata(peer_id);
+                    }
+                }
+            } catch (const std::exception& e) {
+                LOG_WARN(
+                    "Failed to exchange metadata with peers during "
+                    "bootstrap: " +
+                    std::string(e.what()));
+            }
         } else {
             requesting_node_it->second.address =
                 request.requesting_node_address;
@@ -724,7 +868,7 @@ std::unique_ptr<Response> TrellisNode::handle_bootstrap_request(
         bootstrap_response.request_id = request.request_id;
         bootstrap_response.responder_id = node_id_;
 
-        auto active_nodes = hash_ring_->get_all_nodes();
+        auto active_nodes = gossip_protocol_->get_active_nodes();
         size_t max_recommended_peers =
             std::min(static_cast<size_t>(5), active_nodes.size());
         size_t added_peers = 0;
@@ -746,4 +890,4 @@ std::unique_ptr<Response> TrellisNode::handle_bootstrap_request(
     }
 }
 
-};  // namespace trelliskv
+}  // namespace trelliskv

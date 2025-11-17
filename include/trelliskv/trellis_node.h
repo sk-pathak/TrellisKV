@@ -21,6 +21,7 @@ class HashRing;
 class ConnectionPool;
 class RequestRouter;
 class GossipProtocol;
+class ReplicationManager;
 
 class TrellisNode {
    public:
@@ -79,6 +80,7 @@ class TrellisNode {
     std::unique_ptr<ConnectionPool> connection_pool_;
     std::unique_ptr<RequestRouter> request_router_;
     std::unique_ptr<GossipProtocol> gossip_protocol_;
+    std::unique_ptr<ReplicationManager> replication_manager_;
 
     mutable std::mutex stats_mutex_;
     ClusterStats stats_;

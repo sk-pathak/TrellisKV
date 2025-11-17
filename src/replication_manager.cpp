@@ -8,6 +8,7 @@
 #include "trelliskv/json_serializer.h"
 #include "trelliskv/messages.h"
 #include "trelliskv/network_manager.h"
+#include "trelliskv/read_result.h"
 #include "trelliskv/replication_request.h"
 #include "trelliskv/storage_engine.h"
 #include "trelliskv/thread_pool.h"
@@ -17,11 +18,9 @@
 namespace trelliskv {
 
 ReplicationManager::ReplicationManager(const NodeId& node_id,
-                                       size_t replication_factor,
-                                       ConsistencyLevel)
+                                       size_t replication_factor)
     : node_id_(node_id),
       replication_factor_(replication_factor),
-      default_consistency_(ConsistencyLevel::EVENTUAL),
       running_(false),
       initialized_(false),
       replication_timeout_(std::chrono::milliseconds(1000)),
@@ -99,6 +98,22 @@ Response ReplicationManager::handle_replication_request(
     }
 
     return apply_replicated_write(request);
+}
+
+ReadResult ReplicationManager::read_with_consistency(const std::string& key,
+                                                     ConsistencyLevel) {
+    if (!validate_initialization() || !running_) {
+        return ReadResult::error("ReplicationManager not running");
+    }
+
+    auto result = storage_engine_->get(key);
+    if (result.is_success()) {
+        return ReadResult::success(result.value());
+    } else if (result.error().find("not found") != std::string::npos) {
+        return ReadResult::not_found();
+    } else {
+        return ReadResult::error(result.error());
+    }
 }
 
 VersionedValue ReplicationManager::resolve_conflicts(
