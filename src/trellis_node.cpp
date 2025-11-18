@@ -502,11 +502,22 @@ Response TrellisNode::handle_put_request(const PutRequest& request) {
 }
 
 Response TrellisNode::handle_delete_request(const DeleteRequest& request) {
+    if (request.is_replication) {
+        auto result =
+            replication_manager_->handle_delete_replication(request.key);
+        result.request_id = request.request_id;
+        result.responder_id = node_id_;
+        return result;
+    }
+
     if (request_router_->is_key_local(request.key)) {
-        auto result = storage_engine_->remove(request.key);
+        TimestampVersion delete_version = TimestampVersion::now(node_id_);
+
+        auto result = replication_manager_->replicate_delete(
+            request.key, delete_version, node_id_);
+
         if (result) {
-            Response response =
-                result.value() ? Response::success() : Response::not_found();
+            Response response = Response::success("", delete_version);
             response.request_id = request.request_id;
             response.responder_id = node_id_;
             return response;

@@ -91,6 +91,76 @@ Result<void> ReplicationManager::replicate_write(
     return Result<void>::success();
 }
 
+Result<void> ReplicationManager::replicate_delete(
+    const std::string& key, const TimestampVersion& version,
+    const NodeId& original_deleter) {
+    if (!validate_initialization() || !running_) {
+        return Result<void>::error("ReplicationManager not running");
+    }
+
+    auto local_result = storage_engine_->remove(key);
+    if (!local_result.is_success()) {
+        update_stats(false);
+        return Result<void>::error("Failed to delete locally: " +
+                                   local_result.error());
+    }
+
+    auto replica_nodes = get_replica_nodes_for_key(key);
+
+    if (!replica_nodes.empty()) {
+        for (const auto& node_id : replica_nodes) {
+            replication_thread_pool_->enqueue(
+                [this, node_id, key, version, original_deleter]() {
+                    try {
+                        auto node_info = hash_ring_->get_node_info(node_id);
+                        if (!node_info) {
+                            update_stats(false);
+                            return;
+                        }
+
+                        DeleteRequest delete_request(key);
+                        delete_request.expected_version = version;
+                        delete_request.consistency = ConsistencyLevel::EVENTUAL;
+                        delete_request.is_replication = true;
+                        delete_request.sender_id = node_id_;
+                        delete_request.request_id =
+                            "repl_del_" +
+                            std::to_string(std::chrono::duration_cast<
+                                               std::chrono::microseconds>(
+                                               std::chrono::system_clock::now()
+                                                   .time_since_epoch())
+                                               .count());
+
+                        auto response = network_manager_->send_request(
+                            node_info->address, delete_request,
+                            std::chrono::milliseconds(50));
+                        update_stats(response.is_success());
+
+                    } catch (const std::exception& e) {
+                        update_stats(false);
+                    }
+                });
+        }
+    }
+
+    update_stats(true);
+    return Result<void>::success();
+}
+
+Response ReplicationManager::handle_delete_replication(const std::string& key) {
+    if (!validate_initialization() || !running_) {
+        return Response::error("ReplicationManager not running");
+    }
+
+    auto result = storage_engine_->remove(key);
+    if (result.is_success()) {
+        return Response::success();
+    } else {
+        return Response::error("Failed to delete replicated key: " +
+                               result.error());
+    }
+}
+
 Response ReplicationManager::handle_replication_request(
     const ReplicationRequest& request) {
     if (!validate_initialization() || !running_) {

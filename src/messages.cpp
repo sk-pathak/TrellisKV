@@ -104,6 +104,7 @@ void DeleteRequest::to_json(nlohmann::json& json) const {
     json["key"] = key;
     json["consistency"] =
         JsonSerializer::consistency_level_to_string(consistency);
+    json["is_replication"] = is_replication;
     if (expected_version.has_value()) {
         json["expected_version"] = JsonSerializer::serialize_timestamp_version(
             expected_version.value());
@@ -121,6 +122,9 @@ void DeleteRequest::from_json(const nlohmann::json& json) {
         if (result) {
             consistency = result.value();
         }
+    }
+    if (json.contains("is_replication")) {
+        is_replication = json["is_replication"];
     }
     if (json.contains("expected_version")) {
         auto result = JsonSerializer::deserialize_timestamp_version(

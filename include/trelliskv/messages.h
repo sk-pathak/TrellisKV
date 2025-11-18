@@ -61,6 +61,7 @@ struct DeleteRequest : public Request {
     std::string key;
     std::optional<TimestampVersion> expected_version;
     ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL;
+    bool is_replication = false;
 
     DeleteRequest() = default;
     DeleteRequest(const std::string& k,

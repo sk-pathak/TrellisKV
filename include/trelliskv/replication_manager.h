@@ -46,7 +46,11 @@ class ReplicationManager {
     void stop();
 
     Result<void> replicate_write(const WriteOperation& operation);
+    Result<void> replicate_delete(const std::string& key,
+                                  const TimestampVersion& version,
+                                  const NodeId& original_deleter);
     Response handle_replication_request(const ReplicationRequest& request);
+    Response handle_delete_replication(const std::string& key);
     ReadResult read_with_consistency(
         const std::string& key,
         ConsistencyLevel consistency = ConsistencyLevel::EVENTUAL);
